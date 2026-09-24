@@ -113,8 +113,10 @@ async function main(): Promise<void> {
   note(`unpacked @deepseek-ai engines on disk: ${[...unpackedEngines].join(', ') || '(none)'}`)
   for (const name of [...candidates].sort()) {
     const short = name.replace('@deepseek-ai/libreoffice-kit-', '')
-    const onDisk = existsSync(join(dshUnpacked, 'node_modules', '@deepseek-ai', short))
-    const asar = await readAsarEntry(`dsh/node_modules/@deepseek-ai/${name}/package.json`)
+    // Candidates carry their @deepseek-ai scope, so both locations join the full package name;
+    // joining the stripped suffix here reported every engine as absent even when it was unpacked.
+    const onDisk = existsSync(join(dshUnpacked, 'node_modules', name))
+    const asar = await readAsarEntry(`dsh/node_modules/${name}/package.json`)
     const flag = asar.exists ? (asar.unpacked ? 'asar(unpacked)' : 'asar(inline)') : 'absent'
     note(`- ${short.padEnd(18)} unpackedOnDisk=${onDisk} asar=${flag}`)
   }
@@ -255,8 +257,10 @@ try {
   const profile = join(home, 'profile')
   mkdirSync(profile)
   const outputPath = join(home, 'probe.pdf')
-  const args = [executable,
-    '--program-directory', programDirectory,
+  // spawn already passes the executable as argv[0]; repeating it here makes the helper treat its
+  // own binary path as the first worker argument and answer "Unknown worker argument" instead of
+  // converting, which silently turns this probe into a fake negative.
+  const args = ['--program-directory', programDirectory,
     '--input-path', inputPath,
     '--output-path', outputPath,
     '--profile-directory', profile,
