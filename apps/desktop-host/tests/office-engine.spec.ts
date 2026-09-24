@@ -46,6 +46,16 @@ it('rejects an engine missing from the unpacked tree instead of using its archiv
   expect(() => { f.require('@deepseek-ai/libreoffice-kit-darwin-arm64/package.json') }).toThrow()
 })
 
+it('resolves an engine manifest through require.resolve for native child processes', () => {
+  const f = fixture()
+  // registerHooks serves require but not require.resolve, and require.resolve is the only lookup
+  // the kit performs for its engine, so the CommonJS resolver wrapper is what keeps the native
+  // helper's program directory outside app.asar.
+  const require = createRequire(join(f.runtime, 'package.json'))
+  expect(require.resolve('@deepseek-ai/libreoffice-kit-darwin-arm64/package.json'))
+    .toBe(realpathSync(join(f.root, 'app.asar.unpacked', 'dsh', f.manifest)))
+})
+
 it('leaves a prepared runtime without an archive unchanged', () => {
   const root = mkdtempSync(join(tmpdir(), 'desktop-office-prepared-'))
   roots.push(root)
