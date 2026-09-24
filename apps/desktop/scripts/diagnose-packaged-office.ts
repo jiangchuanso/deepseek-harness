@@ -6,7 +6,7 @@
  * error. It runs against the unsigned unpacked application produced by packaging. */
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { resolveDesktopBuildTarget, resolveDesktopTargetBuildPaths } from './desktop-build-paths.mjs'
@@ -318,6 +318,47 @@ try {
       rmSync(home, { recursive: true, force: true })
     }
   }
+
+  // prebuilds.json lists every asset the engine ships, so comparing it against each tree names the
+  // exact files an incomplete copy, an ASAR unpack gap, or a Windows path-length limit dropped.
+  // Executables survive all three because extension globs unpack them, which is why a helper can
+  // look present and still fail on the registry data it bootstraps from.
+  section('Engine manifest coverage (prebuilds.json)')
+  const dataRelative = join('program', 'share', 'registry', 'graphicfilter.xcd')
+  for (const [label, base] of [['prepared', dshPrepared], ['unpacked', dshUnpacked]] as const) {
+    const engineRoot = join(base, 'node_modules', '@deepseek-ai', engineShort)
+    const manifestPath = join(engineRoot, 'prebuilds.json')
+    if (!existsSync(manifestPath)) {
+      warn(`${label}: no prebuilds.json under ${engineRoot}`)
+      continue
+    }
+    let files: Record<string, string> = {}
+    try {
+      files = (JSON.parse(readFileSync(manifestPath, 'utf8')) as { files?: Record<string, string> }).files ?? {}
+    } catch {
+      // An unparseable manifest still leaves the presence checks below meaningful.
+    }
+    const names = Object.keys(files)
+    const missing = names.filter(name => !existsSync(join(engineRoot, name)))
+    const longest = names.reduce((max, name) => Math.max(max, join(engineRoot, name).length), 0)
+    note(`${label}: engine=${existsSync(engineRoot)} manifest=${names.length} missing=${missing.length} longestPath=${longest} graphicfilter=${existsSync(join(engineRoot, dataRelative))}`)
+    if (missing.length > 0) note(`${label}: first missing: ${missing.slice(0, 5).join(', ')}`)
+  }
+  const archivedData = await readAsarEntry(`dsh/node_modules/@deepseek-ai/${engineShort}/program/share/registry/graphicfilter.xcd`)
+  note(`asar: graphicfilter present=${archivedData.exists} unpacked=${archivedData.unpacked}`)
+  const longPathRoot = join(resources, 'long-path-probe')
+  const longProbe = join(longPathRoot, 'x'.repeat(230), 'probe.txt')
+  let longPaths = false
+  try {
+    mkdirSync(dirname(longProbe), { recursive: true })
+    writeFileSync(longProbe, 'probe')
+    longPaths = existsSync(longProbe)
+  } catch {
+    // A throw is the measurement: this host refuses the probe path.
+  } finally {
+    rmSync(longPathRoot, { recursive: true, force: true })
+  }
+  note(`long paths beyond MAX_PATH: supported=${longPaths} (probe length ${longProbe.length})`)
 
   section('Verdict')
   if (!existsSync(appAsarUnpacked)) {
