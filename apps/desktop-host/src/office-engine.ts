@@ -1,7 +1,7 @@
 /** Resolve packaged Office engine manifests from their complete, unpacked resource directories. */
 import { Module, registerHooks, type ModuleHooks } from 'node:module'
 import { existsSync, realpathSync } from 'node:fs'
-import { basename, delimiter, dirname, join, relative, sep } from 'node:path'
+import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /** Engine packages whose files must reach native child processes as physical paths. */
@@ -90,6 +90,21 @@ export function installOfficeEngineRuntimeAdjustments(runtimeDir: string): void 
 }
 
 /**
+ * Test whether one path begins with another, tolerating the separator and case differences between
+ * a resolver's spelling and the path Electron's realpath answers with on Windows.
+ *
+ * No separator boundary is implied: the engine directory prefixes end inside the package name, so
+ * that they cover every platform suffix, and callers that need a boundary append it themselves.
+ * @param path - Candidate path.
+ * @param prefix - Prefix it may start with.
+ * @returns Whether {@link path} starts with {@link prefix}.
+ */
+function startsWithPath(path: string, prefix: string): boolean {
+  const normalize = (value: string) => process.platform === 'win32' ? resolve(value).toLowerCase() : resolve(value)
+  return normalize(path).startsWith(normalize(prefix))
+}
+
+/**
  * Translate one resolver result into the physical path a native child process must open.
  *
  * Electron answers `require` and `require.resolve` with archive-relative paths, while its
@@ -110,11 +125,12 @@ function unpackedEnginePath(resolved: string, directories: EngineDirectories): s
     // An archive entry the platform cannot resolve stays as reported and is matched below.
     canonical = resolved
   }
-  if (canonical.startsWith(directories.unpacked)) return canonical
-  if (canonical.startsWith(directories.archived)) {
+  if (startsWithPath(canonical, directories.unpacked)) return canonical
+  if (startsWithPath(canonical, directories.archived)) {
     return directories.unpacked + canonical.slice(directories.archived.length)
   }
-  if (canonical.startsWith(directories.archive + sep)) {
+  // The archive needs a boundary: app.asar.unpacked starts with app.asar but lies outside it.
+  if (startsWithPath(canonical, directories.archive + sep)) {
     throw new Error(`desktop Office engine resolved outside the runtime package directory: ${resolved}`)
   }
   return resolved
