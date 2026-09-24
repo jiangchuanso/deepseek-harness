@@ -177,7 +177,7 @@ pnpm run package:desktop:mac:x64
 pnpm run package:desktop:win:x64
 ```
 
-macOS arm64 命令要求 Apple Silicon。macOS x64 命令可以在 Intel macOS 或带 Rosetta 的 Apple Silicon 上运行。Windows x64 命令要求 Windows x64。Linux 不是受支持的 Desktop 发布目标。
+macOS arm64 命令要求 Apple Silicon。macOS x64 命令可以在 Intel macOS 或带 Rosetta 的 Apple Silicon 上运行。Windows x64 命令要求 Windows x64。Linux arm64 命令要求 Linux arm64 构建主机，并且是唯一始终未签名的产物线，因为其背后没有签名身份或更新源。
 
 每个目标都在 `apps/desktop/.desktop-build/targets/<target>/` 下持有自己的打包输入、已准备运行时、包集合、dsh 依赖树、pnpm 准备状态、未打包应用、更新元数据和最终产物。Electron 归档缓存继续由 `.desktop-build/downloads` 共享，因为每个归档文件名都包含版本、平台和架构，并且在解包前经过验证。目标构建绝不读取其他目标的可变准备状态。
 
@@ -266,6 +266,16 @@ pnpm run package:desktop:win:x64:unsigned
 ```
 
 该命令要求设置 `DSH_DESKTOP_APP_ID` 并具备常规构建依赖，包括编译原生模块所需的 Python 和 Visual C++ 构建工具。Python 不在 `PATH` 中时，将 `PYTHON` 设置为其可执行文件路径。命令将安装包写入 `.desktop-build/targets/win-x64/unsigned-artifacts/`，省略自动更新配置，清除签名凭据，且不生成发布完成记录。它不需要 EV 凭据或更新源地址。签名打包和上传命令仍遵循正式发布要求。
+
+### 未签名 Linux Debian 包
+
+在 Linux arm64 上使用完整打包命令，这是 Linux 上唯一受支持的产物线：
+
+```sh
+pnpm run package:desktop:linux:arm64
+```
+
+该命令要求 Linux arm64 构建主机，因为捆绑运行时通过目标 Electron 自带的 Node 安装依赖图，而该安装会按构建主机解析可选的原生包。它把 `deepseek-harness-<version>-linux-arm64-unsigned.deb` 写入 `.desktop-build/targets/linux-arm64/unsigned-artifacts/`，省略自动更新配置，也不创建发布完成记录。该包面向麒麟 V10 SP1 等 Debian 系 arm64 系统；捆绑的 Electron 要求 glibc 2.25 或更高，且由于没有发布 Linux 原生引擎，Office 转换使用 WASM 引擎。
 
 ### Windows 安装界面
 

@@ -1,0 +1,330 @@
+# Package the Electron desktop application from this checkout and publish the
+# result as a GitHub Release tagged desktop-v<version>. Upstream ships no desktop
+# packaging workflow, and its release lanes are credentialed (Windows EV token,
+# Apple notarization, Tencent COS upload), so this workflow builds the lanes a
+# checkout without release infrastructure can produce: the unsigned Windows x64
+# installer and the unsigned Linux arm64 Debian package (Kylin V10 SP1 and
+# compatible). It releases both directly and never writes an update feed.
+#
+# Two entries start a run: pushing a desktop-v<version> tag packages that tag's
+# version, and a manual dispatch packages the product version or an explicit
+# --build-version. Either way the produced installers name the published version,
+# and a tag run refuses to proceed unless the tag and the installers agree.
+#
+# The desktop-v<version> tag carries unsigned builds here, while upstream uses
+# the same prefix for signed production uploads; fetching upstream tags into this
+# repository later reports a conflict for a version published from both.
+#
+# Packaging resolves the application ID and the mandatory-update policy origin
+# before it honors --unsigned, so unsigned builds still need the target dotenv
+# file. The test deployment also requires nonempty allowedAuthOrigins, while the
+# production deployment rejects them; this workflow therefore pins the test
+# deployment and lets the origin and its allowed authentication origins be
+# overridden through repository variables of the same name.
+#
+# Signed Windows packaging, macOS packaging, and upload:* remain release-operator
+# transactions that need a supervised runner, an EV token, or Apple credentials,
+# and they are deliberately not attempted here.
+name: Desktop package
+
+on:
+  # Pushing the tag packages the version that tag names; the manual entry builds
+  # an ad-hoc version and leaves tag creation to gh release create.
+  push:
+    tags:
+      - 'desktop-v*'
+  workflow_dispatch:
+    inputs:
+      build-version:
+        description: Desktop release version passed to --build-version. Ignored when the run starts from a tag. Leave empty to use the product version.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  # Desktop packaging is a long manual transaction that creates a tag; serialize
+  # runs instead of cancelling one that has already built.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PRIMARY_NODE_VERSION: '24'
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  win-x64-unsigned:
+    name: Windows x64 unsigned installer
+    # Building native modules and the bundled runtime needs Visual C++ Build Tools
+    # and Python, which windows-2025 provides; the job is long and storage-heavy.
+    runs-on: windows-2025
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Desktop manifests record the build commit and dirty-worktree flag.
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Resolve pnpm store path
+        id: pnpm-store
+        shell: pwsh
+        run: |
+          "path=$(pnpm store path --silent)" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/cache/restore@v4
+        if: runner.environment == 'github-hosted'
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-${{ runner.arch }}-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-
+
+      - name: Install (immutable)
+        run: pnpm install --frozen-lockfile
+
+      # package-target.ts resolves @deepseek-ai/node-addon-system/flock while its module graph
+      # loads, and that workspace package ships only built lib/, so the project must be built first.
+      - name: Build native system packages
+        run: pnpm --dir native/system run build:ts
+
+      # Packaging reads release settings only from the target dotenv file and
+      # never falls back to shell or system variables, so the file is written
+      # from the selected variables and removed after the job.
+      - name: Write Windows package settings
+        shell: pwsh
+        run: |
+          @'
+          DSH_DESKTOP_APP_ID=${{ vars.DSH_DESKTOP_APP_ID || 'com.deepseek.harness' }}
+          DSH_DESKTOP_AUTO_UPDATE_ENV=test
+          DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN=${{ vars.DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN || 'https://policy.example.com' }}
+          DSH_DESKTOP_MANDATORY_UPDATE_CONFIG=${{ vars.DSH_DESKTOP_MANDATORY_UPDATE_CONFIG || '{"allowedAuthOrigins":["https://login.example.com"]}' }}
+          '@ | Set-Content -LiteralPath apps/desktop/.env.windows -Encoding utf8NoBOM
+
+      - name: Package unsigned Windows installer
+        shell: pwsh
+        env:
+          DESKTOP_BUILD_VERSION: ${{ inputs.build-version }}
+          DESKTOP_REF_TYPE: ${{ github.ref_type }}
+          DESKTOP_REF_NAME: ${{ github.ref_name }}
+        run: |
+          $version = $env:DESKTOP_BUILD_VERSION
+          if ($env:DESKTOP_REF_TYPE -eq 'tag') { $version = $env:DESKTOP_REF_NAME -replace '^desktop-v', '' }
+          $arguments = @('--filter', '@deepseek-ai/dsh-desktop', 'run', 'package:win:x64:unsigned')
+          if ($version) { $arguments += @('--build-version', $version) }
+          pnpm @arguments
+
+      # Forensic step: the smoke step above both builds and exercises the packaged Office engine,
+      # and it fails the job on a conversion error. This step runs regardless and prints how the
+      # LibreOfficeKit engine was assembled (ASAR vs unpacked) and whether it resolves at runtime,
+      # so a single run decides between an unpack defect, a missing engine package, or a native error.
+      - name: Diagnose packaged Office engine
+        if: always()
+        shell: pwsh
+        run: pnpm --filter @deepseek-ai/dsh-desktop run diagnose:office
+
+      - name: Upload unsigned installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-win-x64-unsigned
+          path: apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/**
+          if-no-files-found: error
+          retention-days: 7
+
+      # The packaging journal keeps phase timings and redacted child output and
+      # survives failures, which is the only diagnostics a long run leaves behind.
+      - name: Upload packaging journal on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-win-x64-unsigned-journal
+          path: apps/desktop/.desktop-build/packaging-runs/**
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove local release settings
+        if: always()
+        shell: pwsh
+        run: Remove-Item -LiteralPath apps/desktop/.env.windows -Force -ErrorAction SilentlyContinue
+
+  linux-arm64-unsigned:
+    name: Linux arm64 unsigned installer
+    # This lane must build on arm64: prepare-dsh installs the bundled runtime graph through the
+    # target Electron's own Node, so pnpm resolves optional native packages against the host and a
+    # cross-built tree would silently carry the wrong architecture.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Resolve pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@v4
+        if: runner.environment == 'github-hosted'
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-${{ runner.arch }}-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-
+
+      - name: Install (immutable)
+        run: pnpm install --frozen-lockfile
+
+      # package-target.ts resolves @deepseek-ai/node-addon-system/flock while its module graph
+      # loads, and that workspace package ships only built lib/, so the project must be built first.
+      - name: Build native system packages
+        run: pnpm --dir native/system run build:ts
+
+      # The packaged-runtime smoke runs Electron in RunAsNode mode, which still loads Chromium's
+      # shared libraries; install-deps adds them without downloading a browser. Playwright is not a
+      # root dependency, so it is invoked through the package that declares it.
+      - name: Install Electron runtime libraries
+        run: pnpm --filter @deepseek-ai/dsh-web-frontend exec playwright install-deps chromium
+
+      - name: Write Linux package settings
+        run: |
+          cat > apps/desktop/.env.linux <<'SETTINGS'
+          DSH_DESKTOP_APP_ID=${{ vars.DSH_DESKTOP_APP_ID || 'com.deepseek.harness' }}
+          DSH_DESKTOP_AUTO_UPDATE_ENV=test
+          DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN=${{ vars.DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN || 'https://policy.example.com' }}
+          DSH_DESKTOP_MANDATORY_UPDATE_CONFIG=${{ vars.DSH_DESKTOP_MANDATORY_UPDATE_CONFIG || '{"allowedAuthOrigins":["https://login.example.com"]}' }}
+          SETTINGS
+
+      - name: Package unsigned Linux installer
+        env:
+          DESKTOP_BUILD_VERSION: ${{ inputs.build-version }}
+          DESKTOP_REF_TYPE: ${{ github.ref_type }}
+          DESKTOP_REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="$DESKTOP_BUILD_VERSION"
+          if [ "$DESKTOP_REF_TYPE" = "tag" ]; then version="${DESKTOP_REF_NAME#desktop-v}"; fi
+          arguments=(--filter @deepseek-ai/dsh-desktop run package:linux:arm64)
+          if [ -n "$version" ]; then arguments+=(--build-version "$version"); fi
+          pnpm "${arguments[@]}"
+
+      # Forensic step: the packaging step above both builds and exercises the packaged Office engine,
+      # and it fails the job on a conversion error. This step runs regardless and prints how the
+      # LibreOfficeKit engine was assembled (ASAR vs unpacked) and whether it resolves at runtime,
+      # so a single run decides between an unpack defect, a missing engine package, or a native error.
+      - name: Diagnose packaged Office engine
+        if: always()
+        run: pnpm --filter @deepseek-ai/dsh-desktop run diagnose:office
+
+      - name: Upload unsigned installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux-arm64-unsigned
+          path: apps/desktop/.desktop-build/targets/linux-arm64/unsigned-artifacts/**
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload packaging journal on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux-arm64-unsigned-journal
+          path: apps/desktop/.desktop-build/packaging-runs/**
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Remove local release settings
+        if: always()
+        run: rm -f apps/desktop/.env.linux
+
+  publish:
+    name: Publish GitHub Release
+    needs: [win-x64-unsigned, linux-arm64-unsigned]
+    runs-on: ubuntu-24.04
+    permissions:
+      # Creating the desktop-v<version> tag and its GitHub Release.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      # The published version comes from the produced installer names so the tag always matches the
+      # artifacts this run built, whether or not --build-version was supplied; a tag run additionally
+      # proves the pushed tag names that same version. A run that finds the release already present
+      # refreshes its assets instead of failing, while a manual run refuses to claim an existing tag.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          shopt -s nullglob
+          version=""
+          exe=""
+          for file in *.exe; do
+            if [[ "$file" =~ ^deepseek-harness-(.+)-win-x64-unsigned\.exe$ ]]; then version="${BASH_REMATCH[1]}"; exe="$file"; fi
+          done
+          if [[ -z "$version" ]]; then
+            echo "::error::no Windows installer among the downloaded artifacts"; exit 1
+          fi
+          deb=""
+          for file in *.deb; do
+            if [[ "$file" =~ ^deepseek-harness-(.+)-linux-arm64-unsigned\.deb$ ]]; then
+              if [[ "${BASH_REMATCH[1]}" != "$version" ]]; then
+                echo "::error::$file does not carry the Windows installer version $version"; exit 1
+              fi
+              deb="$file"
+            fi
+          done
+          if [[ -z "$deb" ]]; then
+            echo "::error::no Linux Debian package among the downloaded artifacts"; exit 1
+          fi
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME#desktop-v}" != "$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not name the built version $version"; exit 1
+          fi
+          tag="desktop-v$version"
+          notes="Unsigned Desktop installers for $version.
+
+          - Windows x64: $exe
+          - Linux arm64 (Debian package): $deb
+
+          Built from commit ${GITHUB_SHA:0:7}. These artifacts are unsigned: they carry no Authenticode signature and no update feed. Install them manually; they do not join the signed update stream."
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --title "Desktop $version" --notes "$notes"
+            gh release upload "$tag" ./*.exe ./*.deb --repo "$GITHUB_REPOSITORY" --clobber
+            exit 0
+          fi
+          arguments=(release create "$tag" --repo "$GITHUB_REPOSITORY" --title "Desktop $version" --notes "$notes")
+          if [[ "$version" == *-* ]]; then arguments+=(--prerelease); fi
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            arguments+=(--verify-tag)
+          else
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+              echo "::error::tag $tag already exists; choose a new version or run this workflow from that tag"; exit 1
+            fi
+            arguments+=(--target "$GITHUB_SHA")
+          fi
+          gh "${arguments[@]}" ./*.exe ./*.deb

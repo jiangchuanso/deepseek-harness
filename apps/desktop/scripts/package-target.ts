@@ -46,19 +46,22 @@ const DESKTOP_UPLOAD_CREDENTIAL_ENV_NAMES = new Set([
 /** `--build-version` value that numbers a build after the ones already taken. */
 const AUTOMATIC_BUILD_VERSION = 'auto'
 
-/** Fixed platform and architecture identifiers exposed by package scripts. */
+/** Fixed platform and architecture identifiers the upload and update commands accept. */
 export type DesktopPackageTargetName = 'mac-arm64' | 'mac-x64' | 'win-x64'
+
+/** Every target packaging can assemble; Linux owns no signing identity and no update feed. */
+export type DesktopBuildTargetName = DesktopPackageTargetName | 'linux-arm64'
 
 /** One supported release target and its electron-builder selectors. */
 export interface DesktopPackageTarget {
-  readonly name: DesktopPackageTargetName
-  readonly platform: 'darwin' | 'win32'
+  readonly name: DesktopBuildTargetName
+  readonly platform: 'darwin' | 'win32' | 'linux'
   readonly arch: 'arm64' | 'x64'
-  readonly builderPlatform: '--mac' | '--win'
+  readonly builderPlatform: '--mac' | '--win' | '--linux'
   readonly builderArch: '--arm64' | '--x64'
 }
 
-const TARGETS: Record<DesktopPackageTargetName, DesktopPackageTarget> = {
+const TARGETS: Record<DesktopBuildTargetName, DesktopPackageTarget> = {
   'mac-arm64': {
     name: 'mac-arm64',
     platform: 'darwin',
@@ -79,6 +82,15 @@ const TARGETS: Record<DesktopPackageTargetName, DesktopPackageTarget> = {
     arch: 'x64',
     builderPlatform: '--win',
     builderArch: '--x64',
+  },
+  // Linux has no code-signing or update-feed target, so its only supported mode is the
+  // unsigned artifact path; the host check below rejects any other build host.
+  'linux-arm64': {
+    name: 'linux-arm64',
+    platform: 'linux',
+    arch: 'arm64',
+    builderPlatform: '--linux',
+    builderArch: '--arm64',
   },
 }
 
@@ -133,8 +145,19 @@ function packageVersion(path: string, label: string): string {
   return manifest.version
 }
 
+/** A packaging target that owns the signed upload and update feed this repository publishes. */
+type DesktopUpdatePackageTarget = DesktopPackageTarget & {
+  readonly name: DesktopPackageTargetName
+  readonly platform: 'darwin' | 'win32'
+}
+
+/** Whether one assembled target owns a completion record, upload feed, or updater metadata. */
+function ownsUpdateFeed(target: DesktopPackageTarget): target is DesktopUpdatePackageTarget {
+  return target.name !== 'linux-arm64'
+}
+
 function writeReleaseRecord(
-  target: DesktopPackageTarget,
+  target: DesktopUpdatePackageTarget,
   environment: NodeJS.ProcessEnv,
   artifactsRoot: string,
 ): void {
@@ -182,6 +205,12 @@ export function resolveDesktopPackageTarget(
   if (target.platform === 'darwin' && hostPlatform !== 'darwin') {
     throw new Error(`desktop package: ${name} requires a macOS build host`)
   }
+  // The bundled runtime graph is installed through the target Electron's own Node, so pnpm
+  // resolves optional native packages against the host; a Linux target must build on linux-arm64
+  // rather than cross-assembling from another architecture.
+  if (target.platform === 'linux' && (hostPlatform !== 'linux' || hostArch !== 'arm64')) {
+    throw new Error('desktop package: linux-arm64 requires a Linux arm64 build host')
+  }
   if (name === 'mac-arm64' && hostArch !== 'arm64') {
     throw new Error('desktop package: mac-arm64 requires an Apple Silicon build host')
   }
@@ -201,7 +230,7 @@ interface DesktopPackageInvocation {
   readonly requestedBuildVersion: string | undefined
 }
 
-function hostTargetName(platform: NodeJS.Platform, arch: string): DesktopPackageTargetName {
+function hostTargetName(platform: NodeJS.Platform, arch: string): DesktopBuildTargetName {
   const name = `${platform === 'darwin' ? 'mac' : platform === 'win32' ? 'win' : platform}-${arch}`
   if (!isTargetName(name)) throw new Error(`desktop package: unsupported build host ${platform}-${arch}`)
   return name
@@ -234,7 +263,9 @@ export function parseDesktopPackageInvocation(
   })
   if (positionals.length > 1) throw new Error('desktop package: expected at most one target')
   const name = positionals[0] ?? hostTargetName(hostPlatform, hostArch)
-  if (values.unsigned && name !== 'win-x64') throw new Error('desktop package: --unsigned requires win-x64')
+  if (values.unsigned && name !== 'win-x64' && name !== 'linux-arm64') {
+    throw new Error('desktop package: --unsigned requires win-x64 or linux-arm64')
+  }
   if (values.unsigned && values['prepare-only']) throw new Error('desktop package: --unsigned cannot use --prepare-only')
   const requestedBuildVersion = values['build-version']?.trim()
   if (values['build-version'] !== undefined && (requestedBuildVersion === undefined || requestedBuildVersion === '')) {
@@ -368,8 +399,10 @@ async function main(): Promise<void> {
         notarizationProxyConfigured: settings.notarizationProxy !== undefined })
       await packagingStep(run.directory, 'macos-package', () => withMacOSSigningKeychain(environment,
         signingEnvironment => packageTarget(invocation, signingEnvironment, run)), secrets)
-    } else {
+    } else if (target.platform === 'win32') {
       await packagingStep(run.directory, 'windows-package', () => packageTarget(invocation, environment, run), secrets)
+    } else {
+      await packagingStep(run.directory, 'linux-package', () => packageTarget(invocation, environment, run), secrets)
     }
     success = true
   } catch (error) {
@@ -402,8 +435,9 @@ export async function packageTarget(
   const mac = target.platform === 'darwin' ? resolveMacOSPackageSettings(environment) : undefined
   const packArguments = mac === undefined ? [] : ['--concurrency', String(mac.packConcurrency)]
   const buildPaths = desktopTargetBuildPaths(target.name)
-  const releaseRecordPath = join(buildPaths.artifacts, desktopBuildRecordFilename(target.name))
-  if (!invocation.prepareOnly && !invocation.unsigned) {
+  // Only a signed release owns a completion record, and Linux never takes that path.
+  if (!invocation.prepareOnly && !invocation.unsigned && ownsUpdateFeed(target)) {
+    const releaseRecordPath = join(buildPaths.artifacts, desktopBuildRecordFilename(target.name))
     rmSync(releaseRecordPath, { force: true })
     rmSync(`${releaseRecordPath}.tmp`, { force: true })
   }
@@ -496,7 +530,9 @@ export async function packageTarget(
     await signedStage('artifacts', () => execute(desktopElectronBuilderArguments(target, invocation.directory), electronBuilderEnv))
     await execute(['exec', 'tsx', 'scripts/smoke-packaged-runtime.ts', ...(invocation.unsigned ? ['--unsigned'] : [])], targetEnv)
   }
-  if (!invocation.directory && !invocation.unsigned) writeReleaseRecord(target, electronBuilderEnv, buildPaths.artifacts)
+  if (!invocation.directory && !invocation.unsigned && ownsUpdateFeed(target)) {
+    writeReleaseRecord(target, electronBuilderEnv, buildPaths.artifacts)
+  }
   if (journal) recordPackagingEvent(journal, { type: 'artifacts', directory: buildPaths.artifacts })
 }
 

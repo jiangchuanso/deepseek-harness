@@ -59,10 +59,14 @@ export function createElectronBuilderConfig(
     throw new Error('desktop package: DSH_DESKTOP_UNSIGNED must be 0 or 1')
   }
   const unsigned = env.DSH_DESKTOP_UNSIGNED === '1'
-  if (unsigned && resolvedPlatform !== 'win32') throw new Error('desktop package: unsigned builds require Windows')
+  // Linux has no signing identity to fall back from and no update feed, so its artifacts are always
+  // produced through the unsigned path; Windows keeps unsigned as an explicit local-test escape.
+  if (unsigned && resolvedPlatform !== 'win32' && resolvedPlatform !== 'linux') {
+    throw new Error('desktop package: unsigned builds require Windows or Linux')
+  }
   const packagesMacOS = targetPlatform === 'darwin' || (targetPlatform === undefined && hostPlatform === 'darwin')
   const packagesWindows = resolvedPlatform === 'win32'
-  if (resolvedPlatform === 'win32') installWindowsDirectoryInstaller()
+  if (packagesWindows) installWindowsDirectoryInstaller()
   const macOSSigning = packagesMacOS ? resolveMacOSSigningEnvironment(env) : undefined
   if (packagesMacOS) resolveMacOSNotarizationEnvironment(env)
   const buildPaths = desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch))
@@ -228,7 +232,11 @@ export function createElectronBuilderConfig(
     },
     linux: {
       category: 'Development',
-      target: ['AppImage'],
+      // The supported Linux target is the Debian-family arm64 package (Kylin V10 SP1 and compatible).
+      target: ['deb'],
+      icon: fileURLToPath(new URL('../resources/icon.png', import.meta.url)),
+      executableName: 'deepseek-harness',
+      maintainer: env.DSH_DESKTOP_LINUX_MAINTAINER?.trim() || 'DeepSeek Harness <noreply@example.com>',
     },
     nsis: {
       installerSidebar: join(buildPaths.root, 'installer-ui', 'uninstaller-sidebar.bmp'),

@@ -22,7 +22,7 @@ import { parse } from 'semver'
 import { desktopBuildVersionPrefix, validateDesktopBuildVersion } from './desktop-build-version.mjs'
 import { DESKTOP_AUTO_UPDATE_ENV, resolveDesktopUploadConfig } from './desktop-auto-update-environment.mjs'
 import { createDesktopCos, DESKTOP_COS_REGION } from './desktop-cos.ts'
-import type { DesktopPackageTargetName } from './package-target.ts'
+import type { DesktopBuildTargetName } from './package-target.ts'
 
 /** How long the whole bucket listing may take before the suggestion falls back to local artifacts. */
 const LISTING_DEADLINE_MS = 8_000
@@ -30,13 +30,13 @@ const LISTING_DEADLINE_MS = 8_000
 /** Objects one listing page may return. */
 const LISTING_PAGE_SIZE = 1000
 
-/** Artifact name electron-builder writes for one build, on either platform; unsigned Windows builds add a suffix. */
-const ARTIFACT = /(?:^|\/)deepseek-harness-(?<version>.+)-(?:mac|win)-(?:arm64|x64)(?:-unsigned)?\.(?:exe|dmg|zip)$/u
+/** Artifact name electron-builder writes for one build, on any packaged platform; unsigned builds add a suffix. */
+const ARTIFACT = /(?:^|\/)deepseek-harness-(?<version>.+)-(?:mac|win|linux)-(?:arm64|x64)(?:-unsigned)?\.(?:exe|dmg|zip)$/u
 
 /** Inputs that decide which versions are already taken. */
 export interface DesktopBuildVersionSuggestionOptions {
   readonly productVersion: string
-  readonly target: DesktopPackageTargetName
+  readonly target: DesktopBuildTargetName
   readonly environment: NodeJS.ProcessEnv
   /** Date segment to number within; defaults to today where the build runs. */
   readonly date?: string

@@ -177,7 +177,7 @@ pnpm run package:desktop:mac:x64
 pnpm run package:desktop:win:x64
 ```
 
-The macOS arm64 command requires Apple Silicon. The macOS x64 command runs on Intel macOS or Apple Silicon with Rosetta. The Windows x64 command requires Windows x64. Linux is not a supported Desktop release target.
+The macOS arm64 command requires Apple Silicon. The macOS x64 command runs on Intel macOS or Apple Silicon with Rosetta. The Windows x64 command requires Windows x64. The Linux arm64 command requires a Linux arm64 build host and is the only line that is always unsigned, because Linux has no signing identity or update feed behind it.
 
 Each target owns its packed package inputs, prepared runtime, package set, dsh tree, pnpm preparation state, unpacked application, update metadata, and final artifacts under `apps/desktop/.desktop-build/targets/<target>/`. The Electron archive cache remains shared under `.desktop-build/downloads` because every archive name includes its version, platform, and architecture and is verified before extraction. A target build never consumes another target's mutable preparation state.
 
@@ -266,6 +266,16 @@ pnpm run package:desktop:win:x64:unsigned
 ```
 
 The command requires `DSH_DESKTOP_APP_ID` and the normal build dependencies, including Python and Visual C++ build tools for native modules. Set `PYTHON` to the Python executable when it is absent from `PATH`. It writes the installer to `.desktop-build/targets/win-x64/unsigned-artifacts/`, omits automatic-update configuration, strips signing credentials, and creates no release completion record. It does not require EV credentials or an update origin. The signed packaging and upload commands retain their release requirements.
+
+### Unsigned Linux Debian package
+
+On Linux arm64, use the complete packaging command, which is the only supported Linux line:
+
+```sh
+pnpm run package:desktop:linux:arm64
+```
+
+The command requires a Linux arm64 build host, because the bundled runtime installs its dependency graph through the target Electron's own Node and that install resolves optional native packages against the build host. It writes `deepseek-harness-<version>-linux-arm64-unsigned.deb` to `.desktop-build/targets/linux-arm64/unsigned-artifacts/`, omits automatic-update configuration, and creates no release completion record. The package targets Debian-family arm64 systems such as Kylin V10 SP1; the bundled Electron requires glibc 2.25 or newer, and Office conversion uses the WASM engine because no native Linux engine is published.
 
 ### Windows installer interface
 
