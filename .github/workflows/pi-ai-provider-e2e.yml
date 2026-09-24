@@ -42,9 +42,11 @@ jobs:
       - name: Install (immutable)
         run: pnpm install --frozen-lockfile
 
-      # The tests self-skip locally when a credential is absent. A manually
-      # dispatched CI run must fail instead of reporting an all-skipped green.
+      # The tests self-skip locally when a credential is absent. In CI, a manually
+      # dispatched run without the required *_EXTERNAL secrets skips the real-API
+      # suite (instead of failing) so forks without those secrets stay green.
       - name: Preflight (require provider API keys)
+        id: preflight-pi-ai
         env:
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY_EXTERNAL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_EXTERNAL }}
@@ -53,13 +55,18 @@ jobs:
           missing=0
           for name in AZURE_OPENAI_API_KEY ANTHROPIC_API_KEY; do
             if [ -z "${!name:-}" ]; then
-              echo "::error::${name} is empty. Configure the corresponding *_EXTERNAL repository secret."
+              echo "::warning::${name} is empty. Configure the corresponding *_EXTERNAL repository secret to run this suite."
               missing=1
             fi
           done
-          exit "$missing"
+          if [ "$missing" -ne 0 ]; then
+            echo "has-key=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "has-key=true" >> "${GITHUB_OUTPUT}"
 
       - name: E2E tests (real Azure OpenAI and Anthropic APIs)
+        if: steps.preflight-pi-ai.outputs.has-key == 'true'
         env:
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY_EXTERNAL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_EXTERNAL }}

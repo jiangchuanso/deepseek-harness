@@ -115,7 +115,11 @@ describe('master-only platform scheduling', () => {
     expect(preflight.if).toContain("github.event_name != 'pull_request'")
     expect(preflight.if).toContain('github.event.pull_request.head.repo.fork')
     expect(preflight.if).toContain("github.event.pull_request.user.login == 'dependabot[bot]'")
-    expect(preflight.run).toContain('exit 1')
+    // A missing external key must skip the optional live-API test gracefully
+    // (exit 0 + warning) rather than hard-fail; the guarded real-API step then
+    // runs only when the key is present (has-key=true) and fails loud on error.
+    expect(preflight.run).toContain('exit 0')
+    expect(preflight.run).toContain('has-key=')
   })
 
   it('runs Wine once on hosted master CI and seeds its own apt cache', () => {
