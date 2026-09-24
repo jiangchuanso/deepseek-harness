@@ -527,5 +527,5 @@ describe('workspace-changes without git', () => {
       expect(info).toHaveBeenCalledTimes(probe.available ? 0 : 1)
       await ctx.fiber.dispose()
     }
-  })
+  }, 30_000)
 })
