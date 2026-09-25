@@ -1,4 +1,4 @@
-import { join, sep } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   desktopTargetBuildPaths,
@@ -9,9 +9,9 @@ import {
 
 describe('desktop build paths', () => {
   it('isolates every mutable build directory by complete target', () => {
-    const arm64 = desktopTargetBuildPaths('mac-arm64')
-    const x64 = desktopTargetBuildPaths('mac-x64')
-    const windows = desktopTargetBuildPaths('win-x64')
+    const arm64 = desktopTargetBuildPaths('mac-arm64', {})
+    const x64 = desktopTargetBuildPaths('mac-x64', {})
+    const windows = desktopTargetBuildPaths('win-x64', {})
     const mutableKeys = [
       'root',
       'artifacts',
@@ -35,10 +35,20 @@ describe('desktop build paths', () => {
   })
 
   it('shares only the immutable upstream download cache', () => {
-    const arm64 = desktopTargetBuildPaths('mac-arm64')
-    const x64 = desktopTargetBuildPaths('mac-x64')
+    const arm64 = desktopTargetBuildPaths('mac-arm64', {})
+    const x64 = desktopTargetBuildPaths('mac-x64', {})
     expect(arm64.downloads).toBe(x64.downloads)
     expect(arm64.downloads).not.toContain(`${sep}targets${sep}`)
+  })
+
+  it('relocates only the artifact directories when a short artifact root is configured', () => {
+    const shortRoot = resolve(join(sep, 'short-artifacts'))
+    const relocated = desktopTargetBuildPaths('win-x64', { DSH_DESKTOP_ARTIFACTS_ROOT: shortRoot })
+    expect(relocated.unsignedArtifacts).toBe(join(shortRoot, 'unsigned-artifacts'))
+    expect(relocated.artifacts).toBe(join(shortRoot, 'artifacts'))
+    // Preparation stays beside the checkout: moving it would make the packaged FileSet external.
+    expect(relocated.dsh).toContain(join('targets', 'win-x64', 'dsh'))
+    expect(relocated.runtime).toContain(join('targets', 'win-x64', 'runtime'))
   })
 
   it('resolves the development primary runtime from the build target rather than the host architecture', () => {

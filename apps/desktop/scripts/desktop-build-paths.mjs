@@ -38,16 +38,23 @@ function assertSupportedTarget(target) {
 /**
  * Return the mutable preparation and artifact directories owned by one release target.
  * @param {'mac-arm64' | 'mac-x64' | 'win-x64' | 'linux-arm64'} target - Supported Desktop target name.
+ * @param {NodeJS.ProcessEnv} env - Packaging environment.
  * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, downloads: string }} Target paths plus the shared immutable download cache.
  */
-export function desktopTargetBuildPaths(target) {
+export function desktopTargetBuildPaths(target, env = process.env) {
   assertSupportedTarget(target)
   const root = join(BUILD_ROOT, 'targets', target)
   const packed = join(root, 'packed')
+  // The assembled application embeds an Office engine whose native bootstrap stops reading its own
+  // registry files once a path reaches MAX_PATH, and the default artifact directory sits under the
+  // repository checkout. A build host with a deep workspace therefore assembles the installers in a
+  // short absolute directory; preparation keeps its layout beside the checkout.
+  const artifactsRoot = env.DSH_DESKTOP_ARTIFACTS_ROOT?.trim()
+  const artifactsBase = artifactsRoot === undefined || artifactsRoot === '' ? root : resolve(artifactsRoot)
   return {
     root,
-    artifacts: join(root, 'artifacts'),
-    unsignedArtifacts: join(root, 'unsigned-artifacts'),
+    artifacts: join(artifactsBase, 'artifacts'),
+    unsignedArtifacts: join(artifactsBase, 'unsigned-artifacts'),
     runtime: join(root, 'runtime'),
     packageSet: join(root, 'package-set'),
     dsh: join(root, 'dsh'),
@@ -87,7 +94,7 @@ export function resolveDesktopTargetBuildPaths(
   hostPlatform = process.platform,
   hostArch = process.arch,
 ) {
-  return desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch))
+  return desktopTargetBuildPaths(resolveDesktopBuildTarget(env, hostPlatform, hostArch), env)
 }
 
 /**
