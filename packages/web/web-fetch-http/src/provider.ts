@@ -136,7 +136,7 @@ export class HttpFetchProvider implements WebFetchProvider {
       // refusal has to be honored here or this hop would reach a service the process refuses
       // everywhere else. It is checked before the proxied branch, since a refused request is not
       // sent anywhere — through a proxy or otherwise.
-      if (route.blocked) throw new WebError(route.reason, 'WEB_EGRESS_BLOCKED')
+      if ('blocked' in route) throw new WebError(route.reason, 'WEB_EGRESS_BLOCKED')
       if (route.proxied && !isNonPublicIpLiteral(url.hostname)) {
         return await publicHttpNetwork.requestVia(route.dispatcher, url, headers, signal)
       }

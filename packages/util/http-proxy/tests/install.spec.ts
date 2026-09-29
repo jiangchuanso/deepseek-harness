@@ -163,10 +163,10 @@ describe('installProxyFromEnvironment', () => {
     const beforeEnv = process.env.HTTP_PROXY
     const { dispose } = await install(proxyAll())
     expect(getGlobalDispatcher()).not.toBe(before)
-    expect(proxyRouteFor(new URL(proxyTarget)).proxied).toBe(true)
+    expect(proxyRouteFor(new URL(proxyTarget))).toMatchObject({ proxied: true })
     await dispose()
     expect(getGlobalDispatcher()).toBe(before)
-    expect(proxyRouteFor(new URL(proxyTarget)).proxied).toBe(false)
+    expect(proxyRouteFor(new URL(proxyTarget))).toMatchObject({ proxied: false })
     expect(process.env.HTTP_PROXY).toBe(beforeEnv)
     await expect((await fetch(originUrl)).text()).resolves.toBe('DIRECT')
   })
@@ -211,7 +211,7 @@ describe('proxyRouteFor', () => {
     const { dispose } = await install(proxyAll())
     const route = proxyRouteFor(new URL(proxyTarget))
     expect(route).toMatchObject({ proxied: true, proxy: proxyUrl })
-    if (!route.proxied) throw new Error('unreachable: asserted proxied above')
+    if (!('proxied' in route) || !route.proxied) throw new Error('unreachable: asserted proxied above')
     // One transport, not a copy: a caller that branched on this route sends its request through the
     // very agent the branch described, so no second read can put the two on different routes.
     expect(route.dispatcher).toBe(getGlobalDispatcher())
@@ -381,7 +381,7 @@ describe('installing over an existing installation', () => {
       }
       // Disposing the direct policy restores the proxy the launcher installed.
       await expect((await fetch(proxyTarget)).text()).resolves.toBe('VIA-PROXY')
-      expect(proxyRouteFor(new URL(proxyTarget)).proxied).toBe(true)
+      expect(proxyRouteFor(new URL(proxyTarget))).toMatchObject({ proxied: true })
     } finally {
       await outer.dispose()
     }
