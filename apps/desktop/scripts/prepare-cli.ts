@@ -8,10 +8,12 @@ import { join } from 'node:path'
  * @param destination - Physical runtime/cli directory prepared for the application.
  * @param platform - Target Desktop operating system.
  */
-export function prepareDesktopCli(destination: string, platform: 'darwin' | 'win32'): void {
+export function prepareDesktopCli(destination: string, platform: 'darwin' | 'win32' | 'linux'): void {
   const name = platform === 'win32' ? 'dsh.cmd' : 'dsh'
   const command = join(destination, 'bin', name)
   mkdirSync(join(destination, 'bin'), { recursive: true })
   copyFileSync(join(import.meta.dirname, '..', 'cli', name), command)
-  if (platform === 'darwin') chmodSync(command, 0o755)
+  // Windows launches through the .cmd wrapper; every POSIX target needs the executable bit, which
+  // the repository does not store on `cli/dsh`.
+  if (platform !== 'win32') chmodSync(command, 0o755)
 }
