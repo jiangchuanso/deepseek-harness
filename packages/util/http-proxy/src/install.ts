@@ -9,6 +9,13 @@
 
 import type { Dispatcher, Pool } from 'undici'
 import {
+  INTRANET_MODE_ENV,
+  intranetRefusal,
+  PUBLIC_SERVICE_DOMAINS,
+  resolveIntranetPolicy,
+  type IntranetPolicy,
+} from './intranet.ts'
+import {
   isSupportedProxyUrl,
   POLICY_ENV_NAMES,
   PROXY_ENV_NAMES,
@@ -21,6 +28,13 @@ import {
 
 /** The active policy, or `undefined` until one is installed. Process-wide, like the dispatcher it tracks. */
 let active: ProxyPolicy | undefined
+
+/**
+ * The active intranet policy, or `undefined` while the switch is off. Separate from {@link active}
+ * because the two answer different questions: the proxy policy says *where* a request goes, this says
+ * whether it may be sent at all. A request refused here never reaches the proxy.
+ */
+let activeIntranet: IntranetPolicy | undefined
 
 /**
  * The proxy environment as the user exported it, or `undefined` when no policy is installed.
@@ -48,6 +62,7 @@ let installed: Dispatcher | undefined
  */
 export type ProxyRoute =
   | { readonly proxied: true; readonly proxy: string; readonly dispatcher: Dispatcher }
+  | { readonly blocked: true; readonly reason: string }
   | { readonly proxied: false }
 
 /** A route that sends nothing through a proxy, shared because it carries no per-request state. */
@@ -56,10 +71,17 @@ const DIRECT_ROUTE: ProxyRoute = { proxied: false }
 /**
  * Decide how to send one request, and hand back the transport that decision assumed.
  *
+ * A caller that owns its transport — `dsh-web-fetch-http` pins a request to addresses it validated —
+ * bypasses the installed dispatcher by construction, so the intranet refusal has to be answered here
+ * too. It is decided before the proxy route: a refused request is not sent anywhere, proxied or not.
+ *
  * @param url - the request URL.
- * @returns the proxied route with its proxy URL and dispatcher, or the direct route.
+ * @returns the blocked route with its refusal, the proxied route with its proxy URL and dispatcher,
+ *   or the direct route.
  */
 export function proxyRouteFor(url: URL): ProxyRoute {
+  const blocked = intranetRefusal(activeIntranet, url)
+  if (blocked !== undefined) return { blocked: true, reason: blocked }
   const policy = active
   const dispatcher = installed
   if (policy === undefined || dispatcher === undefined) return DIRECT_ROUTE
@@ -129,7 +151,7 @@ function writeProxyEnv(values: Readonly<Record<string, string | undefined>>): ()
 }
 
 /**
- * Build the global dispatcher for one policy.
+ * Build the global dispatcher for one resolved egress policy — what may be requested, and how.
  *
  * Routing runs through {@link proxyForUrl} per origin, so `fetch` and every caller that asks where a
  * URL goes read the same answer from the same matcher. undici's `EnvHttpProxyAgent` cannot express
@@ -137,16 +159,25 @@ function writeProxyEnv(values: Readonly<Record<string, string | undefined>>): ()
  * tunnel a scheme this package deliberately keeps direct after refusing the SOCKS or malformed URL
  * the user named for it — the route and the diagnostic would then disagree.
  *
- * @param policy - the policy to route by; it must proxy at least one scheme.
+ * A refused origin throws from this factory. undici's `DispatcherBase.dispatch` catches exactly that
+ * and fails the request through `handler.onResponseError`, so the refusal arrives as an ordinary
+ * transport failure — in milliseconds, with no packet sent — instead of a connection attempt that
+ * waits out its own timeout on a network where the vendor answers nothing.
+ *
+ * @param policy - the policy to route by, which may proxy nothing.
+ * @param intranet - the refusal policy to enforce, or `undefined` outside intranet mode.
  * @returns the dispatcher to install, owning every per-origin agent its factory created.
  */
-async function createPolicyDispatcher(policy: ProxyPolicy): Promise<Dispatcher> {
+async function createEgressDispatcher(policy: ProxyPolicy, intranet: IntranetPolicy | undefined): Promise<Dispatcher> {
   const { Agent, Pool, ProxyAgent } = await import('undici')
   return new Agent({
     factory(origin, options) {
       // undici declares this parameter as `Object`, discarding the pool options it actually passes.
       const passed = options as Pool.Options
-      const proxy = proxyForUrl(policy, new URL(origin.toString()))
+      const url = new URL(origin.toString())
+      const refused = intranetRefusal(intranet, url)
+      if (refused !== undefined) throw new Error(refused)
+      const proxy = proxyForUrl(policy, url)
       if (proxy !== undefined) return new ProxyAgent({ ...passed, uri: proxy })
       // What undici's own default factory builds for these options, which `factory` replaces
       // wholesale. It reaches for a bare `Client` only at `connections: 1`, an option this
@@ -157,28 +188,31 @@ async function createPolicyDispatcher(policy: ProxyPolicy): Promise<Dispatcher> 
 }
 
 /**
- * Route this process's outbound HTTP through `policy`.
+ * Install one resolved egress policy: where requests go, and which of them are refused.
  *
  * Installing replaces undici's global dispatcher, which is what Node's built-in `fetch` resolves, so
  * every caller that issues a plain `fetch()` is covered without knowing this package exists. A policy
- * that proxies nothing installs a direct dispatcher and leaves the environment untouched.
+ * that proxies nothing installs a direct dispatcher and leaves the environment untouched — unless
+ * intranet mode is on, which has a refusal to enforce and therefore still owns a dispatcher.
  *
  * A worker thread has its own `globalThis` and so its own dispatcher; installing here does not
  * reach it. No worker installs one today: both this repository ships — the workflow engine and the
  * PTC runtime — evaluate model-authored scripts, which must not receive a proxy URL that may carry
  * credentials. A worker that needs the policy has to be handed one explicitly and install it itself.
  *
- * @param policy - the resolved policy to install.
- * @returns a disposer restoring the previous dispatcher, policy, and environment, then closing the agent.
+ * @param policy - the resolved proxy policy to install.
+ * @param intranet - the resolved intranet policy, or `undefined` while the switch is off.
+ * @returns a disposer restoring the previous dispatcher, policies, and environment, then closing the agent.
  */
-async function installGlobalProxy(policy: ProxyPolicy): Promise<() => Promise<void>> {
+async function installGlobalEgress(policy: ProxyPolicy, intranet: IntranetPolicy | undefined): Promise<() => Promise<void>> {
   const previousPolicy = active
-  if (policy.source === 'none') {
+  const previousIntranet = activeIntranet
+  if (policy.source === 'none' && intranet === undefined) {
     // A direct policy mounted over an installed one must actually stop proxying. Recording the policy
     // alone would leave the previous agent as the global dispatcher, so a plain `fetch()` would keep
     // tunnelling while `proxyForUrl()` reported a direct connection — and `mode: 'off'` would be a
     // silent no-op. With nothing installed there is nothing to displace.
-    if (previousPolicy === undefined) {
+    if (previousPolicy === undefined && previousIntranet === undefined) {
       active = policy
       return () => {
         active = previousPolicy
@@ -196,28 +230,36 @@ async function installGlobalProxy(policy: ProxyPolicy): Promise<() => Promise<vo
     const direct = new undici.Agent()
     undici.setGlobalDispatcher(direct)
     active = policy
+    activeIntranet = undefined
     installed = undefined
     return async () => {
       undici.setGlobalDispatcher(previous)
       active = previousPolicy
+      activeIntranet = previousIntranet
       installed = previousInstalled
       restoreEnv?.()
       await direct.close()
     }
   }
-  const restoreEnv = applyPolicyEnv(policy)
+  // A policy that proxies nothing publishes no normalization, exactly as it installs no proxy agent;
+  // the user's own values return for the window, as they do for the direct policy above.
+  const restoreEnv = policy.source === 'none'
+    ? inheritedProxyEnv === undefined ? undefined : writeProxyEnv(inheritedProxyEnv)
+    : applyPolicyEnv(policy)
   const { getGlobalDispatcher, setGlobalDispatcher } = await import('undici')
   const previousDispatcher = getGlobalDispatcher()
   const previousInstalled = installed
-  const agent = await createPolicyDispatcher(policy)
+  const agent = await createEgressDispatcher(policy, intranet)
   setGlobalDispatcher(agent)
   active = policy
+  activeIntranet = intranet
   installed = agent
   return async () => {
     setGlobalDispatcher(previousDispatcher)
     active = previousPolicy
+    activeIntranet = previousIntranet
     installed = previousInstalled
-    restoreEnv()
+    restoreEnv?.()
     await agent.close()
   }
 }
@@ -279,7 +321,7 @@ export function proxyEnvironmentForChild(): Readonly<Record<string, string | und
 }
 
 /**
- * Resolve this process's proxy policy from `env` and install it.
+ * Resolve this process's outbound policies from `env` and install them.
  *
  * Resolution, reporting, and installation are one operation because no caller needs them apart: the
  * launcher does all three in sequence before the first plugin mounts, and a policy resolved but not
@@ -287,11 +329,12 @@ export function proxyEnvironmentForChild(): Readonly<Record<string, string | und
  *
  * A value the environment supplies but this package cannot use is reported and skipped rather than
  * thrown: the variable may have been exported for another tool, and a proxy the harness cannot use
- * must not stop the agent from starting.
+ * must not stop the agent from starting. Intranet mode is the other way round — it is reported so an
+ * operator can see it in the launch log, but a refusal is enforced, never skipped.
  *
  * @param env - the launch environment, whose own layering already prefers real variables over `.env` files.
  * @param report - receives one message per rejected value, in the order the values were considered.
- * @returns a disposer restoring the previous dispatcher, policy, and environment.
+ * @returns a disposer restoring the previous dispatcher, policies, and environment.
  */
 export async function installProxyFromEnvironment(
   env: EnvLookup,
@@ -299,7 +342,13 @@ export async function installProxyFromEnvironment(
 ): Promise<() => Promise<void>> {
   const { policy, diagnostics } = resolveProxyPolicy(env)
   for (const diagnostic of diagnostics) report(diagnostic.message)
-  return await installGlobalProxy(policy)
+  const intranet = resolveIntranetPolicy(env)
+  if (intranet !== undefined) {
+    report(`${INTRANET_MODE_ENV} is on: requests to ${PUBLIC_SERVICE_DOMAINS.join(', ')}`
+      + ' and their subdomains are refused locally, so a route still carrying a public default fails'
+      + ' at once instead of waiting out its connection timeout')
+  }
+  return await installGlobalEgress(policy, intranet)
 }
 
 /**

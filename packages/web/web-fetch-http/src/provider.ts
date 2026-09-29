@@ -132,6 +132,11 @@ export class HttpFetchProvider implements WebFetchProvider {
       // nothing — the address is already stated — so the shortcut would spend the checks for
       // nothing and let a proxy on this machine reach the very service they keep out of reach.
       const route = proxyRouteFor(url)
+      // This provider owns its transport, so an installed dispatcher never sees the request: a
+      // refusal has to be honored here or this hop would reach a service the process refuses
+      // everywhere else. It is checked before the proxied branch, since a refused request is not
+      // sent anywhere — through a proxy or otherwise.
+      if (route.blocked) throw new WebError(route.reason, 'WEB_EGRESS_BLOCKED')
       if (route.proxied && !isNonPublicIpLiteral(url.hostname)) {
         return await publicHttpNetwork.requestVia(route.dispatcher, url, headers, signal)
       }

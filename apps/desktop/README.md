@@ -439,6 +439,12 @@ The downloaded bytes are inert, and the installation call is recorded rather tha
 
 An unpackaged Electron process uses `.desktop-build/development/project` under its application directory as its development project. `DSH_DESKTOP_PNPM_ENTRY` and `DSH_DESKTOP_DSH_DIR` are optional overrides with application-path defaults. `DSH_DESKTOP_PRIMARY_RUNTIME_DIR` is required for every unpackaged launch: the development launchers (`dev:desktop`, `start:desktop`, and the workspace-update qualification runner) set it to the primary-runtime directory of the target they prepared, and a launch without it fails with the fatal startup dialog. The launcher must set it because the shell cannot derive that directory from `process.arch`: the build target fixes Windows to x64 while the host may be arm64. Packaged applications ignore these variables, resolve signed resources from `process.resourcesPath`, and use the managed Desktop profile.
 
+## Intranet mode
+
+`DSH_INTRANET_MODE` declares that this deployment reaches its own endpoints and nothing on the public internet. Any non-empty value enables it, and the value comes from the process environment or — for an installed application started by a desktop session rather than a shell — from `$DSH_HOME/.env`. The shell then skips automatic update checks and never polls the mandatory update policy, so neither its polling deadline nor its login window can hold a launch or a conversation. A cached account session whose origin belongs to one of the product's public domains is not handed to the embedded Platform view, which leaves the account surface in the signed-out state it already renders; an account platform the deployment runs itself still opens. Sign-in through the system browser stays available and remains the browser's own decision.
+
+The Host enforces the same switch for its own requests — see [`dsh-http-proxy`](../../packages/util/http-proxy/README.md#intranet-mode) for the refusal and the settings a deployment points at its internal endpoints.
+
 ## Known limitations
 
 - Account sign-in is not connected; the Sign in button is disabled. Windows material rendering still requires platform QA.

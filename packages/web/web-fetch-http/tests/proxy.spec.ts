@@ -71,6 +71,23 @@ async function installProxy(): Promise<() => Promise<void>> {
   return await installProxyFromEnvironment(env, () => undefined)
 }
 
+/** The vendor's model endpoint as a shipped route still spells it. */
+const vendorTarget = 'https://api.deepseek.com/anthropic/v1/messages'
+
+/**
+ * Install the policy of a deployment that runs inside its own network: intranet mode on, and — when
+ * the case needs one — the same proxy a configured environment would carry.
+ */
+async function installIntranet(throughProxy = false): Promise<() => Promise<void>> {
+  const values: Record<string, string> = { DSH_INTRANET_MODE: '1' }
+  if (throughProxy) {
+    values.HTTP_PROXY = proxyUrl
+    values.HTTPS_PROXY = proxyUrl
+  }
+  const env = { get: (name: string) => (name in values ? { value: values[name] as string } : undefined) }
+  return await installProxyFromEnvironment(env, () => undefined)
+}
+
 describe('fetching through a proxy', () => {
   it('tunnels the request and never resolves a public address for it', async () => {
     const resolve = vi.spyOn(publicHttpNetwork, 'resolve')
@@ -155,5 +172,38 @@ describe('fetching through a proxy', () => {
     await expect(new HttpFetchProvider(limits).fetch({ url: 'ftp://example.com/x' }))
       .rejects.toThrow(expect.objectContaining({ code: 'WEB_INVALID_URL' }))
     expect(proxied).toEqual([])
+  })
+})
+
+describe('fetching under intranet mode', () => {
+  it('refuses a public service of the product\'s vendor before resolving or connecting', async () => {
+    const resolve = vi.spyOn(publicHttpNetwork, 'resolve')
+    disposeProxy = await installIntranet()
+
+    // This provider owns its transport, so the installed dispatcher never sees the hop: without the
+    // explicit refusal it would resolve the public address, pin it, and connect.
+    await expect(new HttpFetchProvider(limits).fetch({ url: vendorTarget }))
+      .rejects.toThrow(expect.objectContaining({ code: 'WEB_EGRESS_BLOCKED' }))
+    expect(resolve).not.toHaveBeenCalled()
+    expect(proxied).toEqual([])
+  })
+
+  it('refuses that host even when the environment proxies everything', async () => {
+    disposeProxy = await installIntranet(true)
+
+    await expect(new HttpFetchProvider(limits).fetch({ url: vendorTarget }))
+      .rejects.toThrow(expect.objectContaining({ code: 'WEB_EGRESS_BLOCKED' }))
+    expect(proxied).toEqual([])
+  })
+
+  it('keeps fetching the hosts the deployment runs itself', async () => {
+    const resolve = vi.spyOn(publicHttpNetwork, 'resolve')
+      .mockResolvedValue([{ address: '127.0.0.1', family: 4 }])
+    disposeProxy = await installIntranet()
+
+    const result = await new HttpFetchProvider(limits).fetch({ url: originUrl })
+
+    expect(result.body.content).toBe('direct')
+    expect(resolve).toHaveBeenCalledOnce()
   })
 })

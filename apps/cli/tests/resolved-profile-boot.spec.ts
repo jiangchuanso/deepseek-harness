@@ -22,7 +22,12 @@ vi.mock('@deepseek-ai/dsh-app-boot', async (importOriginal) => {
     installFailLoud: vi.fn(),
   }
 })
-vi.mock('@deepseek-ai/dsh-http-proxy', () => ({ installProxyFromEnvironment: vi.fn() }))
+// Only the install is substituted: the switch resolution is pure over the launch snapshot, so the
+// telemetry opt-out it drives is exercised through the real function.
+vi.mock('@deepseek-ai/dsh-http-proxy', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@deepseek-ai/dsh-http-proxy')>(),
+  installProxyFromEnvironment: vi.fn(),
+}))
 
 const homes: string[] = []
 afterEach(() => {
@@ -167,6 +172,54 @@ describe('runProfile with an application-owned profile', () => {
       await shutdown.shutdown(0)
       expect(dispose).toHaveBeenCalledOnce()
       expect(disposeProxy).toHaveBeenCalledOnce()
+    } finally {
+      await ctx.fiber.dispose()
+      process.exitCode = oldExitCode
+    }
+  })
+
+  it('opts the telemetry exporter out under intranet mode, with no explicit opt-out set', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'dsh-intranet-telemetry-'))
+    homes.push(home)
+    mkdirSync(join(home, 'runtime'))
+    writeFileSync(join(home, 'runtime/package.json'), '{"name":"test-runtime","version":"1.0.0"}')
+    writeFileSync(join(home, 'package.json'), '{"name":"test-bundle","version":"1.0.0"}')
+    vi.stubEnv('DSH_HOME', home)
+    // The ordinary state of an intranet deployment: it declares the switch and nothing else.
+    vi.stubEnv('DSH_TELEMETRY_DISABLED', '')
+    vi.spyOn(process, 'on').mockReturnValue(process)
+    const oldExitCode = process.exitCode
+    const ctx = new Context()
+    ctx.provide('loader', { create: vi.fn() })
+    ctx.provide('hmr', {})
+    vi.mocked(installProxyFromEnvironment).mockResolvedValue(vi.fn().mockResolvedValue(undefined))
+    vi.mocked(boot).mockImplementation(async (_name, _root, _patches, setup) => {
+      await setup?.(ctx)
+      return ctx
+    })
+    const profile: Profile = { skippedBundles: [],
+      name: 'desktop', dir: home, patchPath: join(home, 'cordis.patch.yml'), patches: [],
+      layers: [{
+        packageName: 'test-bundle', packageDir: home, patchPaths: [join(home, 'bundle.yml')],
+        patches: [{ insert: [{ id: 'session-telemetry-otel', name: 'telemetry' }] }],
+      }],
+    }
+    // The home layer is where an installed Desktop application carries the switch.
+    const environment = createLaunchEnvironmentSnapshot([
+      { source: 'user-env', path: join(home, '.env'), values: { DSH_INTRANET_MODE: '1' } },
+    ])
+    try {
+      const { shutdown } = await runProfile({
+        environment, profile: 'desktop',
+        resolvedProfile: { profile, installAnchor: join(home, 'runtime/package.json') },
+        patchFiles: [], args: ['--no-open'],
+      })
+      // The exporter is the one outbound path an installed dispatcher cannot refuse, so the switch
+      // must also take it out of the composition.
+      const rows = composeEntries([vi.mocked(boot).mock.calls[0]![2]!])
+      expect(rows.find(row => row.id === 'session-telemetry-otel')?.disabled).toBe(true)
+      expect(ctx.profileContext.telemetryDisabledEnv).toBe('1')
+      await shutdown.shutdown(0)
     } finally {
       await ctx.fiber.dispose()
       process.exitCode = oldExitCode

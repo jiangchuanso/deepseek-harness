@@ -33,7 +33,7 @@ import {
   type RuntimeResolution,
 } from '@deepseek-ai/dsh-app-boot'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import { installProxyFromEnvironment } from '@deepseek-ai/dsh-http-proxy'
+import { installProxyFromEnvironment, intranetModeEnabled } from '@deepseek-ai/dsh-http-proxy'
 import { DSH_LAUNCH_ENVIRONMENT_KEY, type LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
 import { provideCmdline, type AppReady } from '@deepseek-ai/dsh-cmdline'
 import { createProcessShutdown, type ProcessShutdown } from './process-shutdown.ts'
@@ -246,6 +246,10 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
   // proxy environment on its own, so every profile would otherwise connect directly. Resolving from
   // the launcher's snapshot — not `process.env` — is what lets a proxy declared in a `.env` layer
   // work, which the NODE_USE_ENV_PROXY flag cannot do because Node samples the environment at start.
+  // The same call installs intranet mode's refusal, which is why the flag is read here as well: the
+  // telemetry exporter is the one outbound path an installed dispatcher does not reach, and intranet
+  // mode must opt it out for the same reason it refuses the vendor's public services.
+  const intranet = intranetModeEnabled(options.environment)
   const disposeProxy = await installProxyFromEnvironment(
     options.environment,
     (message) => { process.stderr.write(`${NAME}: ${message}\n`) },
@@ -291,7 +295,10 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
       installAnchor: options.resolvedProfile?.installAnchor ?? INSTALL_ANCHOR,
       startedBundles: composed.profile.layers.map(layer => layer.packageName),
       cwd: process.cwd(), home: resolveDshHome(),
-      overlays: composed.overlays, telemetryDisabledEnv: process.env.DSH_TELEMETRY_DISABLED,
+      overlays: composed.overlays,
+      // Intranet mode outranks an unset switch: the opt-out is enforced, not merely defaulted, because
+      // the exporter posts to a public collector the deployment this mode serves cannot reach.
+      telemetryDisabledEnv: intranet ? '1' : process.env.DSH_TELEMETRY_DISABLED,
     }
     const ctx = await boot(NAME, rootConfig, readProfilePatches(NAME, profileContext, composed.profile), async (hostCtx) => {
       app.current = hostCtx

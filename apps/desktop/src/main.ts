@@ -22,6 +22,7 @@ import {
   type MenuItemConstructorOptions,
 } from 'electron'
 import { resolveDesktopPaths } from './paths.ts'
+import { desktopIntranetMode, refusedOrigin } from './intranet-mode.ts'
 import { DesktopProjectManager } from './project-manager.ts'
 import { DesktopHostFatalError, DesktopHostProcess, DesktopHostUncleanExitError } from './host-process.ts'
 import { DesktopPlatformView, PLATFORM_IPC, platformBounds } from './platform-view.ts'
@@ -313,6 +314,8 @@ async function main(): Promise<void> {
   const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
   const resources = runtimeResources()
   const paths = resolveDesktopPaths()
+  // Resolved before anything can poll: both decisions it makes below happen on startup.
+  const intranet = desktopIntranetMode()
   const development = !app.isPackaged
   const primaryRuntime = development
     ? developmentPrimaryRuntime()
@@ -410,7 +413,13 @@ async function main(): Promise<void> {
     const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
       hostInspectPort, process.env, onFailure,
       primaryRuntime,
-      resources, (next) => { platformView.setSession(next) })
+      resources, (next) => {
+        // The embedded account documents load their origin in a native view, which no installed
+        // dispatcher reaches. A session that survived from before this deployment was isolated would
+        // otherwise navigate a public page; withholding it leaves the account surface in the
+        // signed-out state it already renders, while an internal account gateway keeps working.
+        platformView.setSession(intranet && refusedOrigin(next?.origin) ? null : next)
+      })
     return {
       start: async () => {
         const ready = await host.start()
@@ -861,6 +870,9 @@ async function main(): Promise<void> {
   }
 
   const automaticCheck = (): void => {
+    // Both checks leave this machine, and intranet mode exists because neither destination answers
+    // here: the policy row is absent above, and an update feed is one more public host.
+    if (intranet) return
     if (!quitting) void mandatoryPolicy?.check('foreground-or-resume').catch((error: unknown) => { console.error(error) })
     if (!quitting) void updateSchedule.check().catch((error: unknown) => { console.error(error) })
   }
@@ -1232,7 +1244,11 @@ async function main(): Promise<void> {
     ? ('dshMandatoryUpdatePolicy' in manifest ? manifest.dshMandatoryUpdatePolicy : undefined)
     : developmentPolicy === undefined ? undefined : JSON.parse(developmentPolicy) as unknown
   const policyConfig = resolveDesktopPolicyConfig(policyInput, !app.isPackaged)
-  if (policyConfig !== undefined) {
+  // Intranet mode owns this decision. The policy service is a public host the deployment this mode
+  // serves cannot reach: polling it would spend every check's full timeout and its login window
+  // would block a user over a service that cannot answer. The packaged policy is still resolved
+  // above, so a build that configured it wrongly fails loudly instead of silently skipping it.
+  if (policyConfig !== undefined && !intranet) {
     if (policyConfig.authentication === 'feishu-test') {
       policyAuth = new DesktopPolicyTestAuth(policyConfig.origin, policyConfig.allowedAuthOrigins, locale,
         () => mandatoryUI?.confirmationWindow ?? currentDialogWindow(),

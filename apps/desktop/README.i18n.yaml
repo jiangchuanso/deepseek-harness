@@ -33,8 +33,8 @@
   en: 4cd8a8da6977928d
   zh: 9f624855a2edac37
 /deepseek-harness-desktop/package/release-versions:
-  en: f461b255133384cc
-  zh: 2b9db718f22fdd04
+  en: 73c92bb968bb4008
+  zh: 6a59f681be7ead9c
 /deepseek-harness-desktop/package/runtime-file-selection:
   en: f0e345fd89868803
   zh: fd2c775ad23fa2f0
@@ -44,6 +44,9 @@
 /deepseek-harness-desktop/package/unsigned-windows-test-installer:
   en: cfd5780dd26a8e46
   zh: f7a16b1ede793b7b
+/deepseek-harness-desktop/package/unsigned-linux-debian-package:
+  en: 1b4ca5c219f84246
+  zh: cb15e68a07514bf1
 /deepseek-harness-desktop/package/windows-installer-interface:
   en: f176a8b1c7de3064
   zh: 6ea2dbe6bb808c34
@@ -62,6 +65,9 @@
 /deepseek-harness-desktop/low-level-development-overrides:
   en: 0b225f914142ef0b
   zh: 9ffd07768d37824e
+/deepseek-harness-desktop/intranet-mode:
+  en: e9268d792a484030
+  zh: ba1933cd3fd52b32
 /deepseek-harness-desktop/known-limitations:
   en: 5b77213c86bbcfb6
   zh: b34bf21773bb852b

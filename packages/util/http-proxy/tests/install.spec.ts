@@ -456,3 +456,105 @@ describe('clearedProxyEnv', () => {
     expect(Object.values(cleared).every(value => value === undefined)).toBe(true)
   })
 })
+
+/** Every message on one error's cause chain; a transport failure hides the refusal one level down. */
+function causeChain(error: unknown): string {
+  const messages: string[] = []
+  let current: unknown = error
+  while (current instanceof Error) {
+    messages.push(current.message)
+    current = current.cause
+  }
+  return messages.join(' | ')
+}
+
+/** The vendor's model endpoint as a shipped route still spells it. */
+const vendorTarget = 'https://api.deepseek.com/anthropic/v1/messages'
+
+describe('intranet mode', () => {
+  it('refuses the request locally, without reaching a resolver or a socket', async () => {
+    const { dispose, reported } = await install(env({ DSH_INTRANET_MODE: '1' }))
+    try {
+      const started = Date.now()
+      const failure = await fetch(vendorTarget).then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+      const elapsed = Date.now() - started
+      expect(causeChain(failure)).toContain('intranet mode')
+      expect(causeChain(failure)).toContain('api.deepseek.com')
+      // Locally refused means milliseconds. A host that only answers nowhere — or that a resolver
+      // has to be asked about — would take its own timeout instead, which is the stall this switch
+      // exists to remove; the bound is loose only to survive a loaded runner.
+      expect(elapsed).toBeLessThan(1000)
+      expect(reported.join('\n')).toContain('DSH_INTRANET_MODE')
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('refuses the host rather than tunnelling it, while every other host still proxies', async () => {
+    const { dispose } = await install(env({
+      DSH_INTRANET_MODE: '1', HTTP_PROXY: proxyUrl, HTTPS_PROXY: proxyUrl,
+    }))
+    try {
+      await expect(fetch(vendorTarget)).rejects.toThrow()
+      // The refusal outranks the proxy: a hop that reached the proxy would have been answered.
+      expect(proxied).toEqual([])
+      // The same install still tunnels what it is allowed to, so the empty expectation is not vacuous.
+      await expect((await fetch(proxyTarget)).text()).resolves.toBe('VIA-PROXY')
+      expect(proxied).toEqual([`GET ${proxyTarget}`])
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('reports the refusal as a route, so a caller owning its transport agrees with it', async () => {
+    const { dispose } = await install(env({ DSH_INTRANET_MODE: '1' }))
+    try {
+      expect(proxyRouteFor(new URL(vendorTarget))).toMatchObject({ blocked: true })
+      expect(proxyRouteFor(new URL(originUrl))).toEqual({ proxied: false })
+    } finally {
+      await dispose()
+    }
+    // Disposal withdraws the policy with the dispatcher: nothing is refused once the install ends.
+    expect(proxyRouteFor(new URL(vendorTarget))).toEqual({ proxied: false })
+  })
+
+  it('leaves a host the deployment runs itself reachable', async () => {
+    const { dispose } = await install(env({ DSH_INTRANET_MODE: '1' }))
+    try {
+      await expect((await fetch(originUrl)).text()).resolves.toBe('DIRECT')
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('is not in force under an install that leaves the switch off', async () => {
+    const { dispose } = await install(env({}))
+    try {
+      expect(proxyRouteFor(new URL(vendorTarget))).toEqual({ proxied: false })
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('stops proxying for the window an intranet-only install owns, and restores the outer policy', async () => {
+    const outer = await install(proxyAll())
+    try {
+      await expect((await fetch(proxyTarget)).text()).resolves.toBe('VIA-PROXY')
+      const inner = await install(env({ DSH_INTRANET_MODE: '1' }))
+      try {
+        // The inner install refuses the vendor host AND, having no proxy of its own, sends the rest
+        // directly — the same rule a direct policy follows when it is layered over a proxied one.
+        await expect(fetch(vendorTarget)).rejects.toThrow()
+        await expect((await fetch(originUrl)).text()).resolves.toBe('DIRECT')
+      } finally {
+        await inner.dispose()
+      }
+      await expect((await fetch(proxyTarget)).text()).resolves.toBe('VIA-PROXY')
+    } finally {
+      await outer.dispose()
+    }
+  })
+})

@@ -441,6 +441,12 @@ node apps/desktop/node_modules/pnpm/bin/pnpm.mjs --dir apps/desktop run test:upd
 
 未打包的 Electron 进程使用应用目录下的 `.desktop-build/development/project` 作为开发项目。`DSH_DESKTOP_PNPM_ENTRY` 和 `DSH_DESKTOP_DSH_DIR` 是带应用路径默认值的可选覆盖项。每次未打包启动都必须设置 `DSH_DESKTOP_PRIMARY_RUNTIME_DIR`：开发启动器（`dev:desktop`、`start:desktop` 及工作区更新验证运行器）会把它设置为自己已准备目标的 primary-runtime 目录；缺少该变量的启动会以致命启动对话框失败。启动器必须设置它，因为壳无法从 `process.arch` 推导该目录：构建目标将 Windows 固定为 x64，而宿主可能是 arm64。打包应用会忽略这些变量，从 `process.resourcesPath` 解析签名资源，并使用受管 Desktop profile。
 
+## 内网模式
+
+`DSH_INTRANET_MODE` 声明该部署只访问自有的端点，不访问公网。任何非空值都会启用它，取值来自进程环境，或者在应用由桌面会话（而非 shell）启动时来自 `$DSH_HOME/.env`。此后，壳不再执行自动更新检查，也不再轮询强制更新策略，因此它的轮询超时与登录窗口都不会拖住启动或对话。缓存下来的账号会话若其 origin 属于本产品的公网域名，就不会交付给内嵌的 Platform 视图，账号界面停留在它本来就会渲染的未登录状态；部署自建的账号平台仍然可以打开。经由系统浏览器的登录保持可用，且仍由浏览器自行决定。
+
+Host 对它自己的请求执行同一开关——拒绝规则与部署应指向内网端点的各项设置见 [`dsh-http-proxy`](../../packages/util/http-proxy/README.zh.md#intranet-mode)。
+
 ## 已知限制
 
 - 账号登录尚未接入；登录按钮禁用。Windows 材质效果仍需平台验证。

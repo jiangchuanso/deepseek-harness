@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 概述
 
-使用本包可为采用 Node 内置 `fetch` 的 Harness 请求应用一份出站 HTTP 代理策略，包括 LLM（大语言模型）、web 搜索与 HTTP MCP 流量。启动器只读取一次标准代理环境变量，普通 `fetch` 调用方无需额外引入或改动。loopback 流量保持直连；不受支持的代理 URL 会被报告，并针对受影响的协议跳过。公共辅助函数可让调用方路由采用自有代理设置的传输、准备子进程环境，或为隔离回放清除代理变量。
+使用本包可为采用 Node 内置 `fetch` 的 Harness 请求应用一份出站 HTTP 策略，包括 LLM（大语言模型）、web 搜索与 HTTP MCP 流量：每个请求走哪个代理，以及在 `DSH_INTRANET_MODE` 开关下哪些请求在离开进程之前就被拒绝。启动器只读取一次标准代理环境变量，普通 `fetch` 调用方无需额外引入或改动。loopback 流量保持直连；不受支持的代理 URL 会被报告，并针对受影响的协议跳过。公共辅助函数可让调用方路由采用自有代理设置的传输、准备子进程环境，或为隔离回放清除代理变量。
 
 ## 目录
 
@@ -25,7 +25,7 @@ kind: "package-reference"
 <a id="use-this-package"></a>
 ## 使用本包
 
-无需挂载，也无需配置。`dsh` 启动器会在第一个插件加载之前，为每个 profile 解析并安装策略，因此导出了 `HTTPS_PROXY` 的用户在所有位置都会走代理。本包是库而非插件，因为传输策略每个进程只有一个答案：没有第二个实现可替换，也没有比进程更窄的作用域可赋予。
+无需挂载，也无需配置。`dsh` 启动器会在第一个插件加载之前，为每个 profile 解析并安装策略，因此导出了 `HTTPS_PROXY` 的用户在所有位置都会走代理，而导出了 `DSH_INTRANET_MODE` 的部署则在所有位置都会被拒绝访问本产品的公网服务。本包是库而非插件，因为传输策略每个进程只有一个答案：没有第二个实现可替换，也没有比进程更窄的作用域可赋予。
 
 ### 编写新的出站调用
 
@@ -35,6 +35,7 @@ kind: "package-reference"
 |---|---|
 | 普通请求，或最终落到 `globalThis.fetch` 的 SDK | 什么都不用——全局 dispatcher 已经在路由它 |
 | 需要按“这次请求是否走代理”分支的调用 | `proxyRouteFor(url)` |
+| 自带传输、因而已安装的 dispatcher 看不到它的调用 | `proxyRouteFor(url)`，并拒绝 `blocked` 这一支 |
 | 接受自有代理 URL 的 SDK | `proxyRouteFor(url)`，把 `route.proxy` 传进去 |
 | 由你自己构造环境的 spawn | 把 `proxyEnvironmentForChild()` 应用到该 spawn（`undefined` 表示删除） |
 | 必须连到自带 fixture（测试前置数据）服务器的 harness | 把 `clearedProxyEnv()` 应用到该 spawn |
@@ -51,9 +52,18 @@ kind: "package-reference"
 
 loopback 始终被绕过——`localhost`、整个 `127.0.0.0/8` 段、`::1`、`0.0.0.0`，以及它们的 IPv4 映射写法。否则 Harness 自己的 Web UI、Connection 传输以及每一个本地测试服务器都会经由代理并形成回环。发布出去的绕过列表只包含读取环境的消费者能匹配的四个字面量条目；`proxyForUrl` 自行识别整个网段，因为列表条目无法表达一个范围。
 
+<a id="intranet-mode"></a>
+### 内网模式
+
+`DSH_INTRANET_MODE` 会拒绝访问本产品自己的公网服务——`deepseek.com` 与 `deepseeksvc.com`，以及两者之下的所有子域名。模型端点与搜索端点都位于自有网络内的部署只需设置一次；此后仍然沿用出厂公网默认值的路由会在毫秒级失败，而不是在厂商不响应的网络里等满整个连接超时。它与代理取自同一份启动快照，因此 `$DSH_HOME/.env` 可以携带它——调用目录下的文件则不可以，因为那个文件随 clone 一起到来——导出的变量优先于该文件。任何非空值都会启用它，`0` 与 `false` 也算：与 `DSH_TELEMETRY_DISABLED` 一样，存在即是开关。
+
+内网模式还会让遥测导出器退出组合，因为该导出器通过 `node:http` 投递，已安装的 dispatcher 触及不到它。除此之外不禁用任何东西：内网端点照常可用，包括部署自建的账号平台。
+
 ### 失败处理
 
 本包无法使用的代理值——SOCKS 或 PAC URL、无法解析的字符串、不受支持的协议——会被报告并跳过，该 scheme 转为直连。该变量可能是用户为其他工具导出的，不应因此阻止 agent（智能体）启动。
+
+内网拒绝则相反：绝不跳过。被拒绝的请求以传输错误失败，其消息点名被拒的主机、拥有它的域名，以及部署本应指向内网端点的设置——模型路由的 `llm-deepseek.baseURL` 或 `DEEPSEEK_BASE_URL`，web 搜索的 `web-search-deepseek.baseURL` 或 `DEEPSEEK_SEARCH_BASE_URL`。由于什么都不会发出，这次失败除错误本身之外没有其他代价。
 
 -----
 
@@ -71,8 +81,9 @@ loopback 始终被绕过——`localhost`、整个 `127.0.0.0/8` 段、`::1`、`
 | 文件 | 承载 |
 |---|---|
 | `src/policy.ts` | 解析与绕过匹配；诊断只点名变量，从不带出它的值。不引入任何传输实现，因此在没有 undici 的环境中仍可加载。 |
-| `src/install.ts` | 全局 dispatcher、生效策略记录、路由与子进程环境。动态引入 undici。 |
-| `src/index.ts` | 本包的对外接口：四个函数与一个类型。 |
+| `src/intranet.ts` | 内网开关、被拒绝的域名与拒绝消息。与 `policy.ts` 一样不引入传输实现。 |
+| `src/install.ts` | 全局 dispatcher、生效中的代理与内网策略、路由与子进程环境。动态引入 undici。 |
+| `src/index.ts` | 本包的对外接口：五个函数、两个常量及其类型。 |
 
 ### 绕过匹配
 
@@ -109,6 +120,7 @@ loopback 始终被绕过——`localhost`、整个 `127.0.0.0/8` 段、`::1`、`
 - **spawn 出的子进程只在足够新的运行时上遵循策略，且仅当它继承的每个值都是 Node 接受的**——它通过 Node 的 `NODE_USE_ENV_PROXY` 读取已发布的环境（22.21+、24+），而 engines 范围允许 22.19 与 22.20，在这两个版本上这样的子进程保持直连。若用户环境里还有 SOCKS 或其他被拒的代理，所有子 Node 都保持直连：不设置该标志，子进程才起得来。子进程还会按 Node 自己的 `NO_PROXY` 规则匹配绕过条目，其分隔符与 IPv4 区间处理与本包不同。本进程内不依赖任何 Node 版本：每一次进程内请求都会落到全局 dispatcher。
 - **遥测按设计直连**——OTLP 导出器通过 `node:http` 投递，全局 dispatcher 触及不到。要让它走代理，要么依赖 `http.Agent` 的 `proxyEnv`，而该选项晚于本项目支持的最低 Node 版本；要么改用 SDK 的 `fetch` 传输，但它没有压缩能力，而随附配置启用了 gzip。遥测是唯一一条丢失后不会让用户付出任何代价的通道，因此维持原状；`DSH_TELEMETRY_MODE=DISABLED` 可关闭它。
 - **模型编写的程序不接收代理配置**——Node ptc-runtime 进程与 workflow worker 不继承可能含有 `user:password` 的代理 URL。其直接请求需要自行配置，并继续受到执行沙箱的约束。
+- **内网拒绝只覆盖本进程自身的请求，触及不到其他进程**——spawn 出的子进程、worker 线程与 Electron 主进程各自拥有传输，各自做决定。启动器触及遥测导出器的方式是把它移出组合，触及桌面壳的方式则是不再轮询该开关所拒绝的服务。
 - **防回归门禁只看源码，看不到依赖内部**——`verify-no-bare-dispatcher` 解析 `packages/*/*/src` 与 `apps/*/src`；测试、脚本以及第三方 SDK 的内部都在其之外。这正是每个出网点还各配一份 `egress.spec.ts` 的原因。
 
 <a id="dev-note"></a>
