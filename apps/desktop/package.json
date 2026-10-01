@@ -7,6 +7,7 @@
   "type": "module",
   "homepage": "https://github.com/deepseek-ai/deepseek-harness",
   "main": "lib/main.js",
+  "desktopName": "deepseek-harness",
   "scripts": {
     "test:installer": "node scripts/test-windows-installer.mjs",
     "build": "tsc -b && pnpm run bundle",
@@ -37,6 +38,7 @@
     "package:win:x64:dir": "tsx scripts/package-target.ts win-x64 --dir",
     "package:linux:arm64": "tsx scripts/package-target.ts linux-arm64 --unsigned",
     "package:linux:arm64:dir": "tsx scripts/package-target.ts linux-arm64 --unsigned --dir",
+    "verify:linux:deb": "node scripts/verify-linux-deb.mjs",
     "upload:mac:arm64": "tsx scripts/upload-target.ts mac-arm64",
     "upload:mac:x64": "tsx scripts/upload-target.ts mac-x64",
     "upload:win:x64": "tsx scripts/upload-target.ts win-x64",

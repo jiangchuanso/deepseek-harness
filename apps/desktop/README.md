@@ -329,7 +329,17 @@ On Linux arm64, use the complete packaging command, which is the only supported 
 pnpm run package:desktop:linux:arm64
 ```
 
-The command requires a Linux arm64 build host, because the bundled runtime installs its dependency graph through the target Electron's own Node and that install resolves optional native packages against the build host. It writes `deepseek-harness-<version>-linux-arm64-unsigned.deb` to `.desktop-build/targets/linux-arm64/unsigned-artifacts/`, omits automatic-update configuration, and creates no release completion record. The package targets Debian-family arm64 systems such as Kylin V10 SP1; the bundled Electron requires glibc 2.25 or newer, and Office conversion uses the WASM engine because no native Linux engine is published.
+The command requires a Linux arm64 build host, because the bundled runtime installs its dependency graph through the target Electron's own Node and that install resolves optional native packages against the build host. It writes `deepseek-harness-<version>-linux-arm64-unsigned.deb` to `.desktop-build/targets/linux-arm64/unsigned-artifacts/`, omits automatic-update configuration, and creates no release completion record. The package targets Debian-family arm64 systems such as Kylin V10 SP1, and Office conversion uses the WASM engine because no native Linux engine is published.
+
+Check the artifact against that target before releasing it:
+
+```sh
+pnpm run verify:desktop:linux:deb
+```
+
+The check unpacks the Debian package and asserts what the Kylin desktop consumes: control metadata declaring arm64 and every runtime library the Electron shell loads; a launcher entry under `/usr/share/applications` carrying a `Name`, `Categories`, and `StartupWMClass`; an `Icon` that resolves to an installed hicolor icon of at least 48px; an `Exec` naming an installed ELF executable; and a glibc requirement no higher than 2.31 — the release Kylin V10 SP1 Desktop (Ubuntu 20.04 base) provides — across every ELF file the package ships. Any problem fails the check. Pass `--deb <path>` to check one artifact and `--target-glibc <version>` to move the baseline.
+
+The launcher entry and the running window share one identity because `desktopName` in `apps/desktop/package.json` names the desktop file, the `StartupWMClass`, and Electron's X11 `WM_CLASS` and Wayland `app_id`; without it the UKUI panel pairs the window with no entry and falls back to Electron's own icon. Packaging installs `chrome-sandbox` without the setuid bit, so startup needs a kernel that allows unprivileged user namespaces, which Ubuntu 20.04 and Kylin V10 SP1 do by default.
 
 ### Windows installer interface
 

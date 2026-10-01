@@ -331,7 +331,17 @@ pnpm run package:desktop:win:x64:unsigned
 pnpm run package:desktop:linux:arm64
 ```
 
-该命令要求 Linux arm64 构建主机，因为捆绑运行时通过目标 Electron 自带的 Node 安装依赖图，而该安装会按构建主机解析可选的原生包。它把 `deepseek-harness-<version>-linux-arm64-unsigned.deb` 写入 `.desktop-build/targets/linux-arm64/unsigned-artifacts/`，省略自动更新配置，也不创建发布完成记录。该包面向麒麟 V10 SP1 等 Debian 系 arm64 系统；捆绑的 Electron 要求 glibc 2.25 或更高，且由于没有发布 Linux 原生引擎，Office 转换使用 WASM 引擎。
+该命令要求 Linux arm64 构建主机，因为捆绑运行时通过目标 Electron 自带的 Node 安装依赖图，而该安装会按构建主机解析可选的原生包。它把 `deepseek-harness-<version>-linux-arm64-unsigned.deb` 写入 `.desktop-build/targets/linux-arm64/unsigned-artifacts/`，省略自动更新配置，也不创建发布完成记录。该包面向麒麟 V10 SP1 等 Debian 系 arm64 系统；由于没有发布 Linux 原生引擎，Office 转换使用 WASM 引擎。
+
+发布前先按目标系统校验产物：
+
+```sh
+pnpm run verify:desktop:linux:deb
+```
+
+该校验解包 Debian 包，并断言麒麟桌面真正消费的内容：control 元数据声明 arm64 且包含 Electron shell 运行时所需的全部库；`/usr/share/applications` 下存在桌面入口，且带有 `Name`、`Categories` 和 `StartupWMClass`；`Icon` 能解析到已安装的 hicolor 图标且不小于 48px；`Exec` 指向包内已安装的 ELF 可执行文件；包内每个 ELF 文件要求的 glibc 不高于 2.31（麒麟 V10 SP1 桌面版基于 Ubuntu 20.04 所提供的版本）。任一问题都会导致校验失败。`--deb <路径>` 校验单个产物，`--target-glibc <版本>` 调整基线。
+
+桌面入口与运行窗口共享同一身份，是因为 `apps/desktop/package.json` 中的 `desktopName` 同时决定桌面文件名、`StartupWMClass`，以及 Electron 的 X11 `WM_CLASS` 和 Wayland `app_id`；缺少它时 UKUI 面板无法把窗口与入口配对，会回退到 Electron 自己的图标。打包安装的 `chrome-sandbox` 不带 setuid 位，因此启动需要内核允许非特权用户命名空间，Ubuntu 20.04 与麒麟 V10 SP1 默认均满足。
 
 ### Windows 安装界面
 

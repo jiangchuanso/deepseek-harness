@@ -23,6 +23,7 @@ import { resolveDesktopAutoUpdateConfig } from './desktop-auto-update-environmen
 import { resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
 import { resolveDesktopBuildVersion } from './desktop-build-version.mjs'
 import { resolveDesktopPolicyEnvironment } from './desktop-policy-environment.mjs'
+import { LINUX_DEB_DEPENDS } from './linux-deb-baseline.mjs'
 import { desktopTargetBuildPaths, resolveDesktopBuildTarget } from './desktop-build-paths.mjs'
 import { installWindowsDirectoryInstaller } from './windows-directory-installer.mjs'
 import { preserveWindowsRuntimeSignature, signWindowsCode } from './windows-runtime-signature.mjs'
@@ -241,6 +242,23 @@ export function createElectronBuilderConfig(
       icon: fileURLToPath(new URL('../resources/icon.png', import.meta.url)),
       executableName: 'deepseek-harness',
       maintainer: env.DSH_DESKTOP_LINUX_MAINTAINER?.trim() || 'DeepSeek Harness <noreply@example.com>',
+      // Kylin's UKUI panel pairs a running window with its launcher entry through StartupWMClass, which
+      // electron-builder derives from desktopName — the value Electron also reports as its X11 WM_CLASS
+      // and Wayland app_id. syncDesktopName names the desktop file after it as well, so the launcher
+      // entry, the panel icon, and the running window share one identity instead of leaving the panel
+      // on Electron's default icon.
+      syncDesktopName: true,
+      synopsis: 'DeepSeek Harness Desktop',
+      desktop: {
+        entry: {
+          StartupNotify: 'true',
+          Keywords: 'deepseek;harness;agent;',
+        },
+      },
+    },
+    deb: {
+      depends: [...LINUX_DEB_DEPENDS],
+      priority: 'optional',
     },
     nsis: {
       installerSidebar: join(buildPaths.root, 'installer-ui', 'uninstaller-sidebar.bmp'),

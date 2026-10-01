@@ -244,6 +244,13 @@ jobs:
         if: always()
         run: pnpm --filter @deepseek-ai/dsh-desktop run diagnose:office
 
+      # The unpacked-directory smoke never sees the Debian metadata: a launcher entry without an
+      # installed icon, a missing runtime dependency, or an ELF needing a newer glibc than Kylin
+      # ships all pass packaging and only surface on the target desktop. This gate unpacks the
+      # artifact and asserts what that desktop consumes.
+      - name: Verify the Debian package against the Kylin baseline
+        run: pnpm --filter @deepseek-ai/dsh-desktop run verify:linux:deb
+
       - name: Upload unsigned installer
         uses: actions/upload-artifact@v4
         with:
