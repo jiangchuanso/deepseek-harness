@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /** Engine packages whose files must reach native child processes as physical paths. */
 const ENGINE_SPECIFIER = /^@deepseek-ai\/libreoffice-kit-(?:darwin|win32|linux)-/u
+const ENGINE_TARGET_PATH = /\/node_modules\/@deepseek-ai\/libreoffice-kit-(?:darwin|win32|linux)-[^/]+\//u
 
 /**
  * The CommonJS resolver that serves every `require` and `require.resolve` call.
@@ -172,7 +173,10 @@ export function installOfficeEngineResolution(runtimeDir: string): ModuleHooks |
   const hooks = registerHooks({
     resolve(specifier, context, nextResolve) {
       const resolved = nextResolve(specifier, context)
-      if (!ENGINE_SPECIFIER.test(specifier)) return resolved
+      if (!resolved.url.startsWith('file:')) return resolved
+      const engineRequest = ENGINE_SPECIFIER.test(specifier)
+      const engineTarget = ENGINE_TARGET_PATH.test(new URL(resolved.url).pathname)
+      if (!engineRequest && !engineTarget) return resolved
       const resolvedPath = fileURLToPath(resolved.url)
       const physical = unpackedEnginePath(resolvedPath, directories)
       return physical === resolvedPath ? resolved : { ...resolved, url: pathToFileURL(physical).href }
