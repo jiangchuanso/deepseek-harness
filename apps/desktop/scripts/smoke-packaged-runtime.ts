@@ -12,7 +12,6 @@ const { values } = parseArgs({ options: { unsigned: { type: 'boolean', default: 
 const target = resolveDesktopBuildTarget()
 const windows = target === 'win-x64'
 const linux = target.startsWith('linux-')
-if (values.unsigned && !windows && !linux) throw new Error('desktop smoke: unsigned artifacts require Windows or Linux')
 const artifacts = values.unsigned ? paths.unsignedArtifacts : paths.artifacts
 // electron-builder names the unpacked directory after the platform and only adds the architecture
 // when it is not the platform default, so linux-arm64 lands in linux-arm64-unpacked.
