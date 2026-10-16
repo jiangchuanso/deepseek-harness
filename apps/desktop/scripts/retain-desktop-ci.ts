@@ -33,6 +33,9 @@ export function desktopReleasesRoot(env: NodeJS.ProcessEnv): string {
  */
 export async function retainDesktopCi(env: NodeJS.ProcessEnv, appRoot = resolve(import.meta.dirname, '..')): Promise<string> {
   const target = resolveDesktopBuildTarget(env)
+  // Retention feeds the credentialed publication lanes; the Linux target owns no update feed and
+  // publishes directly from its own workflow, so it must never reach the retained store.
+  if (target === 'linux-arm64') throw new Error('desktop retention: linux-arm64 owns no update feed and is published directly')
   const windows = target === 'win-x64'
   const platform = windows ? 'win32' : 'darwin'
   const settings = loadDesktopPackageEnvironment(platform, env, appRoot, { unsigned: true })

@@ -34,3 +34,12 @@ it.each(['mac-arm64', 'win-x64'] as const)('retains the complete %s release with
   expect(manifest.source).toMatchObject({ target, qualification: target === 'win-x64' ? 'signed' : 'notarized' })
   expect(manifest.source.publishRequested).toBeUndefined()
 })
+
+it('rejects the Linux target, which owns no update feed and publishes directly', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'retain-ci-'))
+  roots.push(root)
+  const appRoot = join(root, 'checkout')
+  await mkdir(appRoot, { recursive: true })
+  await expect(retainDesktopCi({ DSH_DESKTOP_TARGET_PLATFORM: 'linux', DSH_DESKTOP_TARGET_ARCH: 'arm64' }, appRoot))
+    .rejects.toThrow(/linux-arm64/u)
+})
