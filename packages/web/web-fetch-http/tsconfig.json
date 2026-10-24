@@ -21,6 +21,9 @@
       "path": "../../util/timeout"
     },
     {
+      "path": "../../util/http-proxy"
+    },
+    {
       "path": "../web"
     }
   ]
