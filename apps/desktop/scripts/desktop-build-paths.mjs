@@ -1,6 +1,6 @@
-/** Resolve build-owned Desktop paths without sharing mutable state across release targets. */
+/** Resolve target-owned Desktop outputs and shared package caches. */
 
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const BUILD_ROOT = join(APP_ROOT, '.desktop-build')
@@ -38,18 +38,22 @@ function assertSupportedTarget(target) {
 /**
  * Return the mutable preparation and artifact directories owned by one release target.
  * @param {'mac-arm64' | 'mac-x64' | 'win-x64' | 'linux-arm64'} target - Supported Desktop target name.
- * @param {NodeJS.ProcessEnv} env - Packaging environment.
- * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, unnotarizedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, downloads: string }} Target paths plus the shared immutable download cache.
+ * @param {NodeJS.ProcessEnv} environment - Packaging environment with an optional absolute cache directory.
+ * @returns {{ root: string, artifacts: string, unsignedArtifacts: string, unnotarizedArtifacts: string, runtime: string, packageSet: string, dsh: string, dshPnpm: string, electron: string, packedDsh: string, packedVendor: string, packedLandlock: string, downloads: string, pnpmStore: string }} Target paths plus shared download and package caches.
  */
-export function desktopTargetBuildPaths(target, env = process.env) {
+export function desktopTargetBuildPaths(target, environment = process.env) {
   assertSupportedTarget(target)
+  const cacheRoot = environment.DSH_DESKTOP_PACKAGE_CACHE_DIR ?? BUILD_ROOT
+  if (!cacheRoot.trim() || !isAbsolute(cacheRoot) || cacheRoot.includes('\0')) {
+    throw new Error('desktop package: DSH_DESKTOP_PACKAGE_CACHE_DIR must be a nonempty absolute directory')
+  }
   const root = join(BUILD_ROOT, 'targets', target)
   const packed = join(root, 'packed')
   // The assembled application embeds an Office engine whose native bootstrap stops reading its own
   // registry files once a path reaches MAX_PATH, and the default artifact directory sits under the
   // repository checkout. A build host with a deep workspace therefore assembles the installers in a
   // short absolute directory; preparation keeps its layout beside the checkout.
-  const artifactsRoot = env.DSH_DESKTOP_ARTIFACTS_ROOT?.trim()
+  const artifactsRoot = environment.DSH_DESKTOP_ARTIFACTS_ROOT?.trim()
   const artifactsBase = artifactsRoot === undefined || artifactsRoot === '' ? root : resolve(artifactsRoot)
   return {
     root,
@@ -64,7 +68,8 @@ export function desktopTargetBuildPaths(target, env = process.env) {
     packedDsh: join(packed, 'dsh'),
     packedVendor: join(packed, 'vendor'),
     packedLandlock: join(packed, 'landlock'),
-    downloads: join(BUILD_ROOT, 'downloads'),
+    downloads: join(cacheRoot, 'downloads'),
+    pnpmStore: join(cacheRoot, 'pnpm-store'),
   }
 }
 
