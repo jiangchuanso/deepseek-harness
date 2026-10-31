@@ -104,14 +104,18 @@ export class HttpFetchProvider implements WebFetchProvider {
       'user-agent': this.limits.userAgent,
       'accept': 'text/html,application/xhtml+xml,text/*;q=0.9,application/json;q=0.8',
     }
+    // A hop the intranet policy refuses never leaves the process; the refusal names the
+    // configuration the request should have pointed elsewhere, so this fails in milliseconds
+    // rather than waiting out a connection timeout to a public service that answers nothing on
+    // an isolated network. The installed dispatcher enforces the same refusal, but this provider
+    // must answer it too: a request it rejects here is one it would otherwise send unpinned.
+    //
+    // Refused here rather than inside the try below: this is the provider's own verdict, not a
+    // transport failure, so it reaches the caller as WEB_EGRESS_BLOCKED instead of being
+    // reclassified as WEB_PROVIDER_ERROR.
+    const route = proxyRouteFor(url)
+    if ('blocked' in route) throw new WebError(route.reason, 'WEB_EGRESS_BLOCKED')
     try {
-      // A hop the intranet policy refuses never leaves the process; the refusal names the
-      // configuration the request should have pointed elsewhere, so this fails in milliseconds
-      // rather than waiting out a connection timeout to a public service that answers nothing on
-      // an isolated network. The installed dispatcher enforces the same refusal, but this provider
-      // must answer it too: a request it rejects here is one it would otherwise send unpinned.
-      const route = proxyRouteFor(url)
-      if ('blocked' in route) throw new WebError(route.reason, 'WEB_EGRESS_BLOCKED')
       // Keep the Node-only transport out of browser-worker startup; a real request loads it here.
       const { fetch } = await import('undici')
       return await fetch(url, { method: 'GET', redirect: 'manual', headers, signal })
