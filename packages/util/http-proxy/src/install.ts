@@ -59,6 +59,10 @@ let installed: Dispatcher | undefined
  * proxied arm therefore carries the dispatcher already routing by this policy: it is process-wide
  * and long-lived, so a caller uses it and never closes it. Disposal closes that dispatcher rather
  * than destroying it, so a request already dispatched when a policy is unmounted still finishes.
+ *
+ * The blocked arm is answered before the proxy route: a refused request is not sent anywhere, proxied
+ * or not. Intranet mode rides the same install and refuses public services locally instead of letting
+ * a request wait out its connection timeout on a network where they answer nothing.
  */
 export type ProxyRoute =
   | { readonly proxied: true; readonly proxy: string; readonly dispatcher: Dispatcher }
@@ -67,6 +71,24 @@ export type ProxyRoute =
 
 /** A route that sends nothing through a proxy, shared because it carries no per-request state. */
 const DIRECT_ROUTE: ProxyRoute = { proxied: false }
+
+/** Optional dispatcher transport choices shared by global installation and per-request construction. */
+export interface DispatcherOptions {
+  /**
+   * Whether the dispatcher may negotiate HTTP/2. Unset keeps undici's own default; pass `false`
+   * for a caller that cannot tolerate an idle h2 session's informational `UND_ERR_INFO` error.
+   */
+  readonly allowH2?: boolean
+}
+
+/**
+ * Translate the optional policy into undici's Agent option, preserving its own default when unset.
+ * @param options - dispatcher choices.
+ * @returns the allowH2 fragment to spread into every Agent and ProxyAgent.
+ */
+function h2Options(options: DispatcherOptions): { readonly allowH2?: boolean } {
+  return options.allowH2 === undefined ? {} : { allowH2: options.allowH2 }
+}
 
 /**
  * Decide how to send one request, and hand back the transport that decision assumed.
@@ -165,24 +187,34 @@ function writeProxyEnv(values: Readonly<Record<string, string | undefined>>): ()
  * waits out its own timeout on a network where the vendor answers nothing.
  *
  * @param policy - the policy to route by, which may proxy nothing.
+ * @param options - optional dispatcher overrides; `allowH2` unset keeps undici's own default.
  * @param intranet - the refusal policy to enforce, or `undefined` outside intranet mode.
  * @returns the dispatcher to install, owning every per-origin agent its factory created.
  */
-async function createEgressDispatcher(policy: ProxyPolicy, intranet: IntranetPolicy | undefined): Promise<Dispatcher> {
+async function createPolicyDispatcher(
+  policy: ProxyPolicy,
+  options: DispatcherOptions = {},
+  intranet: IntranetPolicy | undefined = undefined,
+): Promise<Dispatcher> {
   const { Agent, Pool, ProxyAgent } = await import('undici')
+  // The HTTP/2 choice is the caller's: undici enables it by default, and a caller that cannot
+  // tolerate an idle h2 session's informational `UND_ERR_INFO` error passes `allowH2: false`
+  // instead of changing the process-wide default for every other outbound request.
+  const h2 = h2Options(options)
   return new Agent({
-    factory(origin, options) {
+    ...h2,
+    factory(origin, passedOptions) {
       // undici declares this parameter as `Object`, discarding the pool options it actually passes.
-      const passed = options as Pool.Options
+      const passed = passedOptions as Pool.Options
       const url = new URL(origin.toString())
       const refused = intranetRefusal(intranet, url)
       if (refused !== undefined) throw new Error(refused)
       const proxy = proxyForUrl(policy, url)
-      if (proxy !== undefined) return new ProxyAgent({ ...passed, uri: proxy })
+      if (proxy !== undefined) return new ProxyAgent({ ...passed, uri: proxy, ...h2 })
       // What undici's own default factory builds for these options, which `factory` replaces
       // wholesale. It reaches for a bare `Client` only at `connections: 1`, an option this
       // dispatcher never carries: it is constructed with undici's defaults.
-      return new Pool(origin, passed)
+      return new Pool(origin, { ...passed, ...h2 })
     },
   })
 }
@@ -200,11 +232,16 @@ async function createEgressDispatcher(policy: ProxyPolicy, intranet: IntranetPol
  * PTC runtime — evaluate model-authored scripts, which must not receive a proxy URL that may carry
  * credentials. A worker that needs the policy has to be handed one explicitly and install it itself.
  *
- * @param policy - the resolved proxy policy to install.
+ * @param policy - the resolved policy to install.
+ * @param options - optional dispatcher overrides; `allowH2` unset keeps undici's own default.
  * @param intranet - the resolved intranet policy, or `undefined` while the switch is off.
  * @returns a disposer restoring the previous dispatcher, policies, and environment, then closing the agent.
  */
-async function installGlobalEgress(policy: ProxyPolicy, intranet: IntranetPolicy | undefined): Promise<() => Promise<void>> {
+async function installGlobalProxy(
+  policy: ProxyPolicy,
+  options: DispatcherOptions = {},
+  intranet: IntranetPolicy | undefined = undefined,
+): Promise<() => Promise<void>> {
   const previousPolicy = active
   const previousIntranet = activeIntranet
   if (policy.source === 'none' && intranet === undefined) {
@@ -227,7 +264,7 @@ async function installGlobalEgress(policy: ProxyPolicy, intranet: IntranetPolicy
     const restoreEnv = inheritedProxyEnv === undefined ? undefined : writeProxyEnv(inheritedProxyEnv)
     const undici = await import('undici')
     const previous = undici.getGlobalDispatcher()
-    const direct = new undici.Agent()
+    const direct = new undici.Agent(h2Options(options))
     undici.setGlobalDispatcher(direct)
     active = policy
     activeIntranet = undefined
@@ -249,7 +286,7 @@ async function installGlobalEgress(policy: ProxyPolicy, intranet: IntranetPolicy
   const { getGlobalDispatcher, setGlobalDispatcher } = await import('undici')
   const previousDispatcher = getGlobalDispatcher()
   const previousInstalled = installed
-  const agent = await createEgressDispatcher(policy, intranet)
+  const agent = await createPolicyDispatcher(policy, options, intranet)
   setGlobalDispatcher(agent)
   active = policy
   activeIntranet = intranet
@@ -263,9 +300,6 @@ async function installGlobalEgress(policy: ProxyPolicy, intranet: IntranetPolicy
     await agent.close()
   }
 }
-
-
-
 
 /**
  * The proxy environment a spawned child needs.
@@ -334,11 +368,13 @@ export function proxyEnvironmentForChild(): Readonly<Record<string, string | und
  *
  * @param env - the launch environment, whose own layering already prefers real variables over `.env` files.
  * @param report - receives one message per rejected value, in the order the values were considered.
- * @returns a disposer restoring the previous dispatcher, policies, and environment.
+ * @param options - optional dispatcher overrides; `allowH2` unset keeps undici's own default.
+ * @returns a disposer restoring the previous dispatcher, policy, and environment.
  */
 export async function installProxyFromEnvironment(
   env: EnvLookup,
   report: (message: string) => void,
+  options: DispatcherOptions = {},
 ): Promise<() => Promise<void>> {
   const { policy, diagnostics } = resolveProxyPolicy(env)
   for (const diagnostic of diagnostics) report(diagnostic.message)
@@ -348,7 +384,33 @@ export async function installProxyFromEnvironment(
       + ' and their subdomains are refused locally, so a route still carrying a public default fails'
       + ' at once instead of waiting out its connection timeout')
   }
-  return await installGlobalEgress(policy, intranet)
+  return await installGlobalProxy(policy, options, intranet)
+}
+
+/**
+ * Build a dispatcher for callers that need their own transport choices without replacing the
+ * process-wide dispatcher. It routes by the environment's resolved policy and carries the same
+ * matcher the global install does, so a per-call dispatcher never disagrees with the launcher.
+ *
+ * The caller owns the dispatcher and closes it once its last request finishes; one dispatcher
+ * shared across a caller's requests keeps its connection pools.
+ *
+ * @param env - the launch environment the policy resolves from.
+ * @param options - optional dispatcher overrides; `allowH2: false` pins the transport to HTTP/1.1.
+ * @returns a dispatcher the caller closes.
+ */
+export async function createRouteDispatcher(
+  env: EnvLookup,
+  options: DispatcherOptions = {},
+): Promise<Dispatcher> {
+  const { policy } = resolveProxyPolicy(env)
+  const dispatcher = policy.source === 'none'
+    ? await (async () => {
+      const { Agent } = await import('undici')
+      return new Agent(h2Options(options))
+    })()
+    : await createPolicyDispatcher(policy, options)
+  return dispatcher
 }
 
 /**
