@@ -1,9 +1,9 @@
 /** Select local test defaults or platform release settings without changing the caller's environment. */
 
-import { accessSync, constants, readFileSync, statSync } from 'node:fs'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { accessSync, constants, statSync } from 'node:fs'
+import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parseEnv } from 'node:util'
+import { readDesktopPackageSettings as readSettings } from './desktop-file-settings.mjs'
 import { resolveDesktopAppId, resolveMacOSNotarizationEnvironment, resolveMacOSSigningEnvironment, resolveNpmRegistry } from './desktop-release-environment.mjs'
 import { resolveDesktopAutoUpdateConfig } from './desktop-auto-update-environment.mjs'
 import { createWindowsTokenSigner } from './windows-sign.mjs'
@@ -107,34 +107,6 @@ export function loadDesktopPackageEnvironment(platform, environment = process.en
     ...(environment.DSH_DESKTOP_UPDATE_CHANNEL === undefined ? {} : { DSH_DESKTOP_UPDATE_CHANNEL: environment.DSH_DESKTOP_UPDATE_CHANNEL }),
     ...(preset === undefined ? {} : { DSH_PACKAGING_PRESET: preset }),
   }
-}
-
-function readSettings(path, accepts) {
-  let contents
-  try {
-    contents = readFileSync(path, 'utf8')
-  }
-  catch {
-    throw new Error(`desktop package: cannot read ${path}; copy ${path}.example and fill in the local settings`)
-  }
-  let settings
-  try {
-    settings = parseEnv(contents.replace(/^\uFEFF/u, ''))
-  }
-  catch {
-    // Parser diagnostics can contain credential-bearing input.
-    throw new Error(`desktop package: invalid dotenv syntax in ${path}`)
-  }
-  for (const name of Object.keys(settings)) {
-    if (!accepts(name)) {
-      throw new Error(`desktop package: unsupported setting ${name} in ${path}; use the platform template`)
-    }
-    if (settings[name].includes('\0')) throw new Error(`desktop package: ${name} cannot contain a NUL character`)
-  }
-  for (const name of FILE_SETTINGS) {
-    if (settings[name]?.trim()) settings[name] = resolve(dirname(path), settings[name].trim())
-  }
-  return settings
 }
 
 function requireReadableFile(environment, name) {
