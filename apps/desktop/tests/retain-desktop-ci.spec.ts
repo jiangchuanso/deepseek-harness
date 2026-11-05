@@ -125,6 +125,10 @@ it('rejects the Linux target, which owns no update feed and publishes directly',
   await expect(retainDesktopCi({ DSH_DESKTOP_TARGET_PLATFORM: 'linux', DSH_DESKTOP_TARGET_ARCH: 'arm64' }, appRoot))
     .rejects.toThrow(/linux-arm64/u)
 })
+it('rejects the Linux target at runner resolution, which owns no update feed', () => {
+  expect(() => resolveDesktopRetentionRunner({ DSH_DESKTOP_TARGET_PLATFORM: 'linux', DSH_DESKTOP_TARGET_ARCH: 'arm64' }))
+    .toThrow(/linux-arm64/u)
+})
 it('rejects missing or ambiguous archival routing before packaging starts', () => {
   const env = { RUNNER_NAME: 'dedicated', DSH_DESKTOP_TARGET_PLATFORM: 'darwin', DSH_DESKTOP_TARGET_ARCH: 'arm64' }
   expect(() => resolveDesktopRetentionRunner(env)).toThrow('DESKTOP_PUBLISH_RUNNERS is required')
