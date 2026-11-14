@@ -1,4 +1,4 @@
-import type { DesktopAutoUpdateTarget } from './desktop-auto-update-environment.mjs'
+import type { DesktopAutoUpdateTarget } from '@deepseek-ai/dsh-desktop-publisher/desktop-auto-update-environment.mjs'
 
 /** Every target this repository can assemble, including the upload-free Linux target. */
 export type DesktopBuildTarget = DesktopAutoUpdateTarget | 'linux-arm64'
