@@ -14,14 +14,12 @@ import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync }
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { FiberState, type Context } from '@deepseek-ai/cordis'
-import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import {
   boot,
   readProfilePatches,
   createRuntimeResolution,
   initProfile,
   installFailLoud,
-  loadOverlayPatches,
   loadProfile,
   reportSkippedBundles,
   PluginPackages,
@@ -204,8 +202,8 @@ interface ComposedProfile {
   profile: Profile
   /** Immutable runtime resolution computed before any plugin imports. */
   resolution: RuntimeResolution
-  /** Command-line overlay contents, frozen for this invocation. */
-  overlays: PatchOptions[]
+  /** Absolute command-line overlay files, in argv order. */
+  overlayPaths: string[]
 }
 
 /**
@@ -231,8 +229,7 @@ async function composeProfile(
   if (resolvedProfile !== undefined) writeFileSync(join(profile.dir, PROFILE_ROOT_FILENAME), PROFILE_ROOT_CONFIG)
   const resolutionOptions = { installAnchor: resolvedProfile?.installAnchor ?? INSTALL_ANCHOR, profile }
   const resolution = await createRuntimeResolution(resolutionOptions)
-  const overlays = patchFiles.flatMap(file => loadOverlayPatches(NAME, resolve(file)))
-  return { profile, resolution, overlays }
+  return { profile, resolution, overlayPaths: patchFiles.map(file => resolve(file)) }
 }
 
 /** An application-owned profile and its independent installation fallback. */
@@ -335,7 +332,7 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
       installAnchor: options.resolvedProfile?.installAnchor ?? INSTALL_ANCHOR,
       startedBundles: composed.profile.layers.map(layer => layer.packageName),
       cwd: process.cwd(), home: resolveDshHome(),
-      overlays: composed.overlays,
+      overlayPaths: composed.overlayPaths,
       // Intranet mode outranks an unset switch: the opt-out is enforced, not merely defaulted, because
       // the exporter posts to a public collector the deployment this mode serves cannot reach.
       telemetryDisabledEnv: intranet ? '1' : process.env.DSH_TELEMETRY_DISABLED,
